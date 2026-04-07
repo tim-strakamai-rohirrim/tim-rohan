@@ -1,0 +1,15 @@
+{
+  "folders": [
+    { "name": "rohan (root)", "path": "." },
+    { "name": "rohan_api", "path": "rohan_api-parent/rohan_api" },
+    { "name": "rohan_api (cve-deterministic)", "path": "rohan_api-parent/rohan_api-cve-deterministic" },
+    { "name": "rohan_api (feature)", "path": "rohan_api-parent/feature" },
+    { "name": "rohan_ui", "path": "rohan_ui-parent/rohan_ui" },
+    { "name": "rohan_ui (feature)", "path": "rohan_ui-parent/feature" },
+    { "name": "rohan-python-api", "path": "rohan-python-api" },
+    { "name": "ONERING", "path": "ONERING" },
+    { "name": "Database", "path": "Database" },
+    { "name": "LocalDev", "path": "LocalDev" }
+  ],
+  "settings": {}
+}
