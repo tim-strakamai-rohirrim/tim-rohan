@@ -34,3 +34,16 @@
 - [x] 6.1 Add or update unit tests for `TaggingService` to verify `tag_ui`-first resolution and `tag_schema` fallback
 - [x] 6.2 Add or update unit tests for `DocShellComponent.buildMenuConfig()` to verify `tag_ui`-first context menu and `tag_schema` fallback
 - [x] 6.3 Verify existing NestJS unit tests for `TaggingTagConfigsService` and `TaggingTagConfigsController` still pass with the new entity field (run `npm run test -- src/tagging`)
+
+## 7. Branch Comparison Recommendations
+
+Comparison of `tim/tag-ui-column` (3 commits, openspec-driven) vs `tim/PRCR-1421` (1 commit, plan-driven) on the `rohan_ui` repo — same 6 files, same feature, both diverge from the same `main` commit.
+
+**Verdict: `tim/tag-ui-column` is the stronger branch.** Apply the following refinements:
+
+- [x] 7.1 **Keep** `resolveTagUiTags()` private helper in `doc-shell.component.ts` (from `tag-ui-column`) — trims whitespace, filters empty entries, extracts logic from `buildMenuConfig()`
+- [x] 7.2 **Keep** updated error messages in `buildMenuConfig()` (from `tag-ui-column`) — "tag_ui or tag_schema" instead of stale "Tag schema is required"
+- [x] 7.3 **Keep** `kindsByType` storing the original `entry.id` (from `tag-ui-column`) in `resolveTagUiMetadata()` — consistent with how the existing schema path stores raw `schemaTag.kind`, not the normalized form
+- [x] 7.4 **Keep** fallback test in `doc-shell.component.spec.ts` (from `tag-ui-column`) — "falls back to tag_schema when tag_ui is null"
+- [x] 7.5 **Adopt** negative assertion test from `PRCR-1421` into `tagging.service.spec.ts` — assert that `resolveConfiguredTagLabel('old_cat', ...)` returns `null` when `tag_ui` is present, proving tag_ui fully replaces (not merges with) tag_schema
+- [x] 7.6 **Adopt** trailing newline at EOF in `tagging.tag-config.types.ts` (from `PRCR-1421`)
