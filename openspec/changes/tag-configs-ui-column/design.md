@@ -72,6 +72,24 @@ This keeps the fallback intact and requires minimal code changes. The `configure
 
 `DocShellComponent.buildMenuConfig()` similarly prefers `tag_ui.tags` for menu entries (using `id` as value, `name` as label), falling back to `tag_schema`.
 
+### 6. kindsByType stores original entry.id
+
+When `resolveTagUiMetadata` populates the `kindsByType` map, the value stored is the **original** `entry.id` (e.g. `"section_header"`), not the normalized form (e.g. `"sectionheader"`). The map key is always normalized (that's how lookups work), but the value preserves the original string.
+
+**Rationale**: The existing schema path (`resolveConfiguredTagMetadata`) stores raw `schemaTag.kind` — not normalized. Callers like `resolveTagKind()` return this value directly for display or API submission, so losing the original casing would be a semantic regression. Storing the original ID keeps the tag_ui and tag_schema paths consistent.
+
+**Alternative considered**: Storing the normalized ID (as in the `PRCR-1421` branch) — rejected because it loses information and diverges from the schema path convention.
+
+### 7. DocShell helper extracts and validates tag_ui entries
+
+`DocShellComponent.buildMenuConfig()` delegates tag_ui processing to a `resolveTagUiTags()` private helper that trims whitespace from `id`/`name` and filters out entries with empty values. This provides an extra layer of robustness against malformed data in the JSONB column.
+
+**Rationale**: The `tag_schema` path (`resolveSchemaTags`) already performs similar validation via `toNonEmptyTrimmedString`. Applying the same discipline to the `tag_ui` path avoids a class of bugs where whitespace-padded or empty entries would produce blank menu items.
+
+### 8. Branch comparison resolution
+
+Two branches implemented Phase 3 (`tim/tag-ui-column` and `tim/PRCR-1421`). After comparison, `tim/tag-ui-column` was selected as the stronger branch. Key factors: extracted helper with trim/filter, updated error messages, correct `kindsByType` convention, and more complete test coverage (including a fallback test in doc-shell). One improvement was adopted from `PRCR-1421`: a negative assertion test proving `tag_ui` fully replaces (not merges with) `tag_schema` metadata.
+
 ## Risks / Trade-offs
 
 - **Data duplication**: `tag_ui` duplicates display fields already in `tag_schema`. → Mitigated by treating `tag_schema` as the backend's contract and `tag_ui` as the UI's contract. A future cleanup can remove display fields from `tag_schema` once all consumers are migrated.

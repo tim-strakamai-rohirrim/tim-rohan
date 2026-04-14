@@ -95,6 +95,17 @@ The Angular `TaggingService` SHALL resolve tag colors, labels, and kinds from `t
 - **WHEN** the active `TagConfigResponse` has `tag_ui` with an empty `tags` array
 - **THEN** the service resolves display metadata from `tag_schema` using existing logic
 
+#### Scenario: tag_ui fully replaces tag_schema (no merge)
+- **WHEN** the active `TagConfigResponse` has a `tag_ui` with a non-empty `tags` array
+- **AND** `tag_schema` also defines tags/categories with different IDs
+- **THEN** only `tag_ui.tags` entries are resolvable — `tag_schema` entries are NOT merged in
+- **AND** calling `resolveConfiguredTagLabel` with a tag_type that exists only in `tag_schema` returns `null`
+
+#### Scenario: kindsByType stores original entry ID
+- **WHEN** the service resolves metadata from `tag_ui`
+- **THEN** `kindsByType` maps the normalized tag type key to the **original** `entry.id` value (not normalized)
+- **AND** this is consistent with the existing schema path which stores raw `schemaTag.kind`
+
 ### Requirement: DocShell context menu prefers tag_ui
 The `DocShellComponent.buildMenuConfig()` method SHALL build context-menu entries from `tag_ui.tags` when available, falling back to `tag_schema` when it is not.
 
@@ -105,6 +116,15 @@ The `DocShellComponent.buildMenuConfig()` method SHALL build context-menu entrie
 #### Scenario: Menu falls back to tag_schema
 - **WHEN** the input `tagConfig` has `tag_ui: null`
 - **THEN** the context menu entries are built from `tag_schema` using existing logic
+
+#### Scenario: Error messages reflect fallback chain
+- **WHEN** `tagConfig` has neither `tag_ui` with valid tags nor a `tag_schema`
+- **THEN** the error message references both sources ("tag_ui or tag_schema"), not just `tag_schema`
+
+#### Scenario: Menu builder trims and filters tag_ui entries
+- **WHEN** `tag_ui.tags` contains entries with whitespace-padded `id` or `name` fields
+- **THEN** the menu builder trims whitespace from both fields
+- **AND** entries with empty `id` or `name` (after trimming) are excluded from the menu
 
 ### Requirement: Angular TagConfigResponse type includes tag_ui
 The `TagConfigResponse` interface SHALL include `tag_ui: TagUi | null` and a new `TagUi` interface defining the normalized shape.

@@ -374,10 +374,10 @@ private resolveTagUiMetadata(tagUi: TagUi): {
 } {
     return tagUi.tags.reduce(
         (metadata, entry) => {
-            const normalizedId = this.normalizeTagType(entry.id);
-            metadata.labelsByType.set(normalizedId, entry.name);
-            metadata.colorsByType.set(normalizedId, entry.color);
-            metadata.kindsByType.set(normalizedId, normalizedId);
+            const normalizedTagType = this.normalizeTagType(entry.id);
+            metadata.labelsByType.set(normalizedTagType, entry.name);
+            metadata.colorsByType.set(normalizedTagType, entry.color);
+            metadata.kindsByType.set(normalizedTagType, entry.id);
             return metadata;
         },
         {
@@ -389,11 +389,14 @@ private resolveTagUiMetadata(tagUi: TagUi): {
 }
 ```
 
+> **Note**: `kindsByType` stores the **original** `entry.id`, not the normalized form. This is consistent with the existing schema path which stores raw `schemaTag.kind`. The original ID is needed by callers (e.g. `resolveTagKind()`) that return the kind for display or API submission.
+```
+
 ### 3.4 DocShellComponent Menu Building
 
 File: `src/app/shared-components/document-shredding/components/document-tagging/doc-shell/doc-shell.component.ts`
 
-**`buildMenuConfig()` update** — try `tag_ui` first:
+**`buildMenuConfig()` update** — try `tag_ui` first via extracted helper:
 
 ```typescript
 private buildMenuConfig(): TagMenuConfig<string>[] {
@@ -401,23 +404,25 @@ private buildMenuConfig(): TagMenuConfig<string>[] {
         throw new Error('Tag config is required to build the tagging menu.');
     }
 
-    const tagUi = this.tagConfig.tag_ui;
-    if (tagUi?.tags?.length) {
-        return tagUi.tags.map((entry, index) => ({
-            label: entry.name,
-            value: entry.id,
+    const tagUiTags = this.resolveTagUiTags(this.tagConfig.tag_ui);
+    if (tagUiTags.length > 0) {
+        return tagUiTags.map((entry, index) => ({
+            label: entry.displayName,
+            value: entry.tagType,
             indent: index > 0,
         }));
     }
 
     const tagSchema = this.tagConfig.tag_schema;
     if (!tagSchema) {
-        throw new Error('Tag schema is required to build the tagging menu.');
+        throw new Error(
+            'Tag config must have either tag_ui or tag_schema to build the tagging menu.',
+        );
     }
 
     const schemaTags = this.resolveSchemaTags(tagSchema);
     if (schemaTags.length === 0) {
-        throw new Error('Tag schema must define at least one menu tag.');
+        throw new Error('Tag config must define at least one menu tag.');
     }
 
     return schemaTags.map((schemaTag, index) => ({
@@ -426,9 +431,24 @@ private buildMenuConfig(): TagMenuConfig<string>[] {
         indent: index > 0,
     }));
 }
+
+private resolveTagUiTags(
+    tagUi: TagUi | null | undefined,
+): Array<{ tagType: string; displayName: string }> {
+    if (!tagUi || !Array.isArray(tagUi.tags)) {
+        return [];
+    }
+
+    return tagUi.tags
+        .map((entry) => ({
+            tagType: entry.id.trim(),
+            displayName: entry.name.trim(),
+        }))
+        .filter((tag) => tag.tagType.length > 0 && tag.displayName.length > 0);
+}
 ```
 
-The existing `resolveSchemaTags()` method is left intact as the fallback path.
+> **Note**: Error messages updated to reflect the tag_ui/tag_schema fallback chain. The `resolveTagUiTags()` helper trims whitespace and filters empty entries for robustness. The existing `resolveSchemaTags()` method is left intact as the fallback path.
 
 ---
 

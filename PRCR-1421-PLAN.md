@@ -205,16 +205,21 @@ verification:
   - File: `src/app/shared-services/tagging/tagging.service.ts`
 - [ ] **3.4** Add private `resolveTagUiMetadata(tagUi: TagUi)` method to `TaggingService`.
   - Simpler than `resolveConfiguredTagMetadata` — directly maps `tags[].id` → label/color/kind.
+  - `kindsByType` must store the **original** `entry.id`, not the normalized form — consistent with how the schema path stores raw `schemaTag.kind`.
   - File: `src/app/shared-services/tagging/tagging.service.ts`
 - [ ] **3.5** Update `DocShellComponent.buildMenuConfig()` to try `tag_ui` first.
+  - Extract a private `resolveTagUiTags()` helper that trims whitespace from `id`/`name` and filters empty entries.
   - If `tagConfig.tag_ui?.tags` is non-empty, build menu from it (`id` → value, `name` → label).
   - Otherwise fall back to existing `tag_schema` parsing.
+  - Update error messages to reflect the new fallback chain ("tag_ui or tag_schema" instead of "Tag schema is required").
   - File: `src/app/shared-components/document-shredding/components/document-tagging/doc-shell/doc-shell.component.ts`
 - [ ] **3.6** Update `TaggingService` unit tests.
   - Test metadata resolution when `tag_ui` is present, absent (falls back to `tag_schema`), and mixed.
+  - Include a **negative assertion** that `tag_schema` entries are NOT resolved when `tag_ui` is present — proves tag_ui fully replaces (not merges with) tag_schema.
   - File: `src/app/shared-services/tagging/tagging.service.spec.ts`
 - [ ] **3.7** Update `DocShellComponent` unit tests.
   - Test menu building from `tag_ui` and fallback to `tag_schema`.
+  - Include a **fallback test**: menu builds from `tag_schema` when `tag_ui` is null.
   - File: `src/app/shared-components/document-shredding/components/document-tagging/doc-shell/doc-shell.component.spec.ts`
 
 ---
@@ -253,7 +258,7 @@ Phase 1 must be first because the DB column must exist before the NestJS entity 
 
 **Phase 2** adds `tag_ui` to the TypeORM `TagConfig` entity as a nullable JSONB column, adds it to both DTOs with `@IsOptional() @IsObject()`, and updates the service's `create()` and `updateById()` methods to handle it. Since the controller returns the raw entity, `tag_ui` automatically appears in API responses. Depends on Phase 1 (column must exist in DB).
 
-**Phase 3** defines the `TagUi` and `TagUiEntry` interfaces in the frontend type file, adds `tag_ui` to `TagConfigResponse`, and updates `TaggingService` and `DocShellComponent` to prefer `tag_ui` for display metadata (labels, colors, menu items) with a fallback to `tag_schema`. Depends on Phase 2 (API must return `tag_ui`).
+**Phase 3** defines the `TagUi` and `TagUiEntry` interfaces in the frontend type file, adds `tag_ui` to `TagConfigResponse`, and updates `TaggingService` and `DocShellComponent` to prefer `tag_ui` for display metadata (labels, colors, menu items) with a fallback to `tag_schema`. Key implementation details from branch comparison: `resolveTagUiMetadata` stores the original `entry.id` (not normalized) for `kindsByType` (consistent with the schema path convention); `DocShellComponent` extracts a `resolveTagUiTags()` helper with trim+filter; error messages reflect the new fallback chain; tests include a negative assertion proving tag_ui fully replaces tag_schema. Depends on Phase 2 (API must return `tag_ui`).
 
 ## Jira Ticket Breakdown
 
@@ -293,7 +298,7 @@ Phase 1 must be first because the DB column must exist before the NestJS entity 
 **Acceptance Criteria**:
 - `TagUi` and `TagUiEntry` interfaces defined
 - `TagConfigResponse` includes `tag_ui: TagUi | null`
-- `TaggingService` resolves colors/labels from `tag_ui.tags[]` when present
-- `DocShellComponent` builds context menu from `tag_ui.tags[]` when present
+- `TaggingService` resolves colors/labels from `tag_ui.tags[]` when present; `kindsByType` stores the original `entry.id` (not normalized)
+- `DocShellComponent` builds context menu from `tag_ui.tags[]` via a `resolveTagUiTags()` helper with trim+filter; error messages reflect "tag_ui or tag_schema" fallback chain
 - Both fall back to `tag_schema` parsing when `tag_ui` is null
-- Unit tests cover both `tag_ui` present and fallback paths
+- Unit tests cover both `tag_ui` present and fallback paths, including a negative assertion that tag_schema entries are not resolved when tag_ui is present
