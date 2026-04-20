@@ -1,0 +1,542 @@
+-- ============================================================================
+-- Seed Script: Compliance Phase 1 Data
+--
+-- Populates compliance_projects, compliance_documents,
+-- compliance_project_documents, and compliance_items with deterministic
+-- test data for local/staging environments.
+--
+-- Usage:
+--   psql -f rohan_api/scripts/sql/test/seed_compliance.sql
+--   Or run directly in pgAdmin / any SQL client.
+--
+-- Prerequisites:
+--   - The compliance tables must already exist (run init_compliance.sql first).
+--   - A user with email support@rohirrim.ai must exist in the users table.
+--
+-- Idempotency:
+--   Safe to run multiple times. All rows use fixed UUIDs with prefix
+--   00000000-0000-4092- and INSERT … ON CONFLICT … DO UPDATE/NOTHING.
+--
+-- NOT wired into run_seeds.sql or run_all.sql — run manually.
+--
+-- Compatible with PostgreSQL 14+
+-- ============================================================================
+
+-- ============================================================================
+-- STEP 1: Resolve support@rohirrim.ai → user_id
+-- ============================================================================
+DO $$
+DECLARE
+    user_email TEXT := 'support@rohirrim.ai';
+    system_user_id INTEGER;
+BEGIN
+    SELECT user_id INTO system_user_id FROM users WHERE email = user_email;
+    IF system_user_id IS NULL THEN
+        RAISE EXCEPTION 'User with email % not found.', user_email;
+    END IF;
+    CREATE TEMP TABLE IF NOT EXISTS temp_user_id (user_id INTEGER);
+    TRUNCATE temp_user_id;
+    INSERT INTO temp_user_id VALUES (system_user_id);
+END $$;
+
+BEGIN;
+
+-- ============================================================================
+-- STEP 2: Upsert compliance_projects (4 rows, one per status)
+-- ============================================================================
+INSERT INTO compliance_projects (
+    id, project_name, contract_number, start_date, due_date,
+    additional_details, project_owner_id, status,
+    created_by, updated_by, deleted_at
+)
+VALUES
+    (
+        '00000000-0000-4092-a001-000000000000',
+        'Seed: IT Infrastructure Compliance Review',
+        'SEED-2025-IT-001',
+        '2025-10-01', '2026-06-30',
+        'Review of enterprise network and server infrastructure against updated compliance requirements.',
+        (SELECT user_id FROM temp_user_id), 'active',
+        (SELECT user_id FROM temp_user_id), (SELECT user_id FROM temp_user_id), NULL
+    ),
+    (
+        '00000000-0000-4092-a002-000000000000',
+        'Seed: Cybersecurity Standards Assessment',
+        'SEED-2025-CS-002',
+        '2025-11-15', '2026-08-15',
+        'Assessment of cybersecurity controls against NIST 800-53 and agency-specific requirements.',
+        (SELECT user_id FROM temp_user_id), 'creating_compliance_list',
+        (SELECT user_id FROM temp_user_id), (SELECT user_id FROM temp_user_id), NULL
+    ),
+    (
+        '00000000-0000-4092-a003-000000000000',
+        'Seed: Cloud Services Vendor Evaluation',
+        'SEED-2025-CL-003',
+        '2025-09-01', '2026-04-30',
+        'Evaluation of cloud service provider proposals against FedRAMP and agency security standards.',
+        (SELECT user_id FROM temp_user_id), 'reviewing_responses',
+        (SELECT user_id FROM temp_user_id), (SELECT user_id FROM temp_user_id), NULL
+    ),
+    (
+        '00000000-0000-4092-a004-000000000000',
+        'Seed: Legacy System Decommission Audit',
+        'SEED-2025-LD-004',
+        '2025-03-01', '2025-12-31',
+        'Audit of legacy system decommission activities for regulatory and data-retention compliance.',
+        (SELECT user_id FROM temp_user_id), 'archived',
+        (SELECT user_id FROM temp_user_id), (SELECT user_id FROM temp_user_id), NULL
+    )
+ON CONFLICT (id) DO UPDATE SET
+    project_name     = EXCLUDED.project_name,
+    contract_number  = EXCLUDED.contract_number,
+    start_date       = EXCLUDED.start_date,
+    due_date         = EXCLUDED.due_date,
+    additional_details = EXCLUDED.additional_details,
+    project_owner_id = EXCLUDED.project_owner_id,
+    status           = EXCLUDED.status,
+    updated_by       = EXCLUDED.updated_by,
+    deleted_at       = EXCLUDED.deleted_at;
+
+-- ============================================================================
+-- STEP 3: Upsert compliance_documents (5 rows, all source / extraction_complete)
+-- ============================================================================
+INSERT INTO compliance_documents (
+    id, document_name, document_category, minio_object_key,
+    file_size_bytes, mime_type, processing_status, uploaded_by
+)
+VALUES
+    (
+        '00000000-0000-4092-b001-000000000000',
+        'IT-Infrastructure-SOW.pdf',
+        'source',
+        'seed/compliance/it-infrastructure/IT-Infrastructure-SOW.pdf',
+        1048576, 'application/pdf', 'extraction_complete',
+        (SELECT user_id FROM temp_user_id)
+    ),
+    (
+        '00000000-0000-4092-b002-000000000000',
+        'Cybersecurity-Requirements.pdf',
+        'source',
+        'seed/compliance/cybersecurity/Cybersecurity-Requirements.pdf',
+        2097152, 'application/pdf', 'extraction_complete',
+        (SELECT user_id FROM temp_user_id)
+    ),
+    (
+        '00000000-0000-4092-b003-000000000000',
+        'Cybersecurity-NIST-Framework.pdf',
+        'source',
+        'seed/compliance/cybersecurity/Cybersecurity-NIST-Framework.pdf',
+        3145728, 'application/pdf', 'extraction_complete',
+        (SELECT user_id FROM temp_user_id)
+    ),
+    (
+        '00000000-0000-4092-b004-000000000000',
+        'Cloud-Services-RFP.pdf',
+        'source',
+        'seed/compliance/cloud-services/Cloud-Services-RFP.pdf',
+        1572864, 'application/pdf', 'extraction_complete',
+        (SELECT user_id FROM temp_user_id)
+    ),
+    (
+        '00000000-0000-4092-b005-000000000000',
+        'Legacy-Decommission-Checklist.pdf',
+        'source',
+        'seed/compliance/legacy-decommission/Legacy-Decommission-Checklist.pdf',
+        524288, 'application/pdf', 'extraction_complete',
+        (SELECT user_id FROM temp_user_id)
+    )
+ON CONFLICT (id) DO UPDATE SET
+    document_name     = EXCLUDED.document_name,
+    document_category = EXCLUDED.document_category,
+    minio_object_key  = EXCLUDED.minio_object_key,
+    file_size_bytes   = EXCLUDED.file_size_bytes,
+    mime_type         = EXCLUDED.mime_type,
+    processing_status = EXCLUDED.processing_status,
+    uploaded_by       = EXCLUDED.uploaded_by;
+
+-- ============================================================================
+-- STEP 4: Upsert compliance_project_documents (5 join rows)
+-- ============================================================================
+INSERT INTO compliance_project_documents (project_id, document_id)
+VALUES
+    ('00000000-0000-4092-a001-000000000000', '00000000-0000-4092-b001-000000000000'),
+    ('00000000-0000-4092-a002-000000000000', '00000000-0000-4092-b002-000000000000'),
+    ('00000000-0000-4092-a002-000000000000', '00000000-0000-4092-b003-000000000000'),
+    ('00000000-0000-4092-a003-000000000000', '00000000-0000-4092-b004-000000000000'),
+    ('00000000-0000-4092-a004-000000000000', '00000000-0000-4092-b005-000000000000')
+ON CONFLICT (project_id, document_id) DO NOTHING;
+
+-- ============================================================================
+-- STEP 5: Upsert compliance_items (24 rows — 6 per project)
+--
+-- Status distribution per project: 2 pending_review, 3 approved, 1 rejected
+-- Extraction methods overall: ~58% auto_extracted, ~25% manual, ~17% edited
+-- ============================================================================
+INSERT INTO compliance_items (
+    id, project_id, source_document_id, line_item_number,
+    compliance_item_title, compliance_item_text,
+    outline_number, section_name,
+    document_start_line, document_end_line,
+    extraction_method, status, reviewed_by, reviewed_at
+)
+VALUES
+    -- ── Project a001: IT Infrastructure Compliance Review (active) ──────────
+    (
+        '00000000-0000-4092-c001-000000000000',
+        '00000000-0000-4092-a001-000000000000',
+        '00000000-0000-4092-b001-000000000000',
+        1,
+        'Network Segmentation Requirements',
+        'The contractor shall implement network segmentation controls that isolate sensitive workloads from general-purpose traffic in accordance with agency network architecture standards.',
+        '1.1', 'Network Architecture',
+        12, 28,
+        'auto_extracted', 'pending_review', NULL, NULL
+    ),
+    (
+        '00000000-0000-4092-c002-000000000000',
+        '00000000-0000-4092-a001-000000000000',
+        '00000000-0000-4092-b001-000000000000',
+        2,
+        'Data Encryption Standards',
+        'All data at rest and in transit shall be encrypted using FIPS 140-2 validated cryptographic modules. Key management procedures shall comply with NIST SP 800-57.',
+        '1.2', 'Security Requirements',
+        35, 52,
+        'auto_extracted', 'pending_review', NULL, NULL
+    ),
+    (
+        '00000000-0000-4092-c003-000000000000',
+        '00000000-0000-4092-a001-000000000000',
+        '00000000-0000-4092-b001-000000000000',
+        3,
+        'Server Uptime SLA',
+        'The contractor shall maintain 99.95% uptime for all production server infrastructure, measured monthly, excluding scheduled maintenance windows approved in writing.',
+        '2.1', 'Service Level Agreements',
+        60, 74,
+        'auto_extracted', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-01-15 10:30:00'
+    ),
+    (
+        '00000000-0000-4092-c004-000000000000',
+        '00000000-0000-4092-a001-000000000000',
+        '00000000-0000-4092-b001-000000000000',
+        4,
+        'Disaster Recovery Plan',
+        'A comprehensive disaster recovery plan shall be developed and tested semi-annually. Recovery time objectives shall not exceed 4 hours for critical systems.',
+        '3.1', 'Business Continuity',
+        80, 99,
+        'manual', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-01-15 11:00:00'
+    ),
+    (
+        '00000000-0000-4092-c005-000000000000',
+        '00000000-0000-4092-a001-000000000000',
+        '00000000-0000-4092-b001-000000000000',
+        5,
+        'Access Control Policy',
+        'Role-based access control shall be implemented across all infrastructure components. Privileged access shall require multi-factor authentication and shall be logged and auditable.',
+        '1.3', 'Security Requirements',
+        105, 120,
+        'edited', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-01-16 09:15:00'
+    ),
+    (
+        '00000000-0000-4092-c006-000000000000',
+        '00000000-0000-4092-a001-000000000000',
+        '00000000-0000-4092-b001-000000000000',
+        6,
+        'Vendor Audit Trail',
+        'The contractor shall maintain a complete audit trail of all vendor access to agency systems, including timestamps, actions performed, and data accessed.',
+        '4.1', 'Compliance Monitoring',
+        130, 145,
+        'manual', 'rejected',
+        (SELECT user_id FROM temp_user_id), '2026-01-16 10:00:00'
+    ),
+
+    -- ── Project a002: Cybersecurity Standards Assessment (creating_compliance_list) ─
+    (
+        '00000000-0000-4092-c007-000000000000',
+        '00000000-0000-4092-a002-000000000000',
+        '00000000-0000-4092-b002-000000000000',
+        1,
+        'Incident Response Procedures',
+        'The organization shall establish and maintain incident response procedures that include detection, analysis, containment, eradication, and recovery phases aligned with NIST SP 800-61.',
+        '1.1', 'Incident Management',
+        10, 30,
+        'auto_extracted', 'pending_review', NULL, NULL
+    ),
+    (
+        '00000000-0000-4092-c008-000000000000',
+        '00000000-0000-4092-a002-000000000000',
+        '00000000-0000-4092-b002-000000000000',
+        2,
+        'Vulnerability Scanning Frequency',
+        'Automated vulnerability scans shall be performed on all internet-facing systems weekly and on internal systems monthly. Critical findings shall be remediated within 30 days.',
+        '2.1', 'Vulnerability Management',
+        38, 55,
+        'auto_extracted', 'pending_review', NULL, NULL
+    ),
+    (
+        '00000000-0000-4092-c009-000000000000',
+        '00000000-0000-4092-a002-000000000000',
+        '00000000-0000-4092-b003-000000000000',
+        3,
+        'Multi-Factor Authentication',
+        'Multi-factor authentication shall be required for all privileged accounts and for remote access to organizational systems, using phishing-resistant methods where feasible.',
+        '3.1', 'Access Control',
+        15, 32,
+        'auto_extracted', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-01-20 14:30:00'
+    ),
+    (
+        '00000000-0000-4092-c010-000000000000',
+        '00000000-0000-4092-a002-000000000000',
+        '00000000-0000-4092-b003-000000000000',
+        4,
+        'Security Awareness Training',
+        'All personnel with access to organizational systems shall complete security awareness training within 30 days of onboarding and annually thereafter. Training shall cover phishing, social engineering, and data handling.',
+        '4.1', 'Personnel Security',
+        40, 58,
+        'manual', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-01-20 15:00:00'
+    ),
+    (
+        '00000000-0000-4092-c011-000000000000',
+        '00000000-0000-4092-a002-000000000000',
+        '00000000-0000-4092-b002-000000000000',
+        5,
+        'Patch Management Timeline',
+        'Critical security patches shall be applied within 14 days of release. All other patches shall be applied within 30 days following validation in a staging environment.',
+        '2.2', 'Vulnerability Management',
+        62, 78,
+        'edited', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-01-21 09:45:00'
+    ),
+    (
+        '00000000-0000-4092-c012-000000000000',
+        '00000000-0000-4092-a002-000000000000',
+        '00000000-0000-4092-b003-000000000000',
+        6,
+        'Penetration Testing Requirements',
+        'Annual penetration testing shall be conducted by an independent third party. The scope shall include external, internal, and web application testing. Findings shall be remediated before the next assessment cycle.',
+        '5.1', 'Assessment',
+        65, 82,
+        'auto_extracted', 'rejected',
+        (SELECT user_id FROM temp_user_id), '2026-01-21 10:30:00'
+    ),
+
+    -- ── Project a003: Cloud Services Vendor Evaluation (reviewing_responses) ───
+    (
+        '00000000-0000-4092-c013-000000000000',
+        '00000000-0000-4092-a003-000000000000',
+        '00000000-0000-4092-b004-000000000000',
+        1,
+        'Cloud Data Residency',
+        'All data processed and stored by the cloud service provider shall reside within the continental United States. Data shall not be transferred to or processed in foreign jurisdictions without prior written authorization.',
+        '1.1', 'Data Governance',
+        8, 25,
+        'auto_extracted', 'pending_review', NULL, NULL
+    ),
+    (
+        '00000000-0000-4092-c014-000000000000',
+        '00000000-0000-4092-a003-000000000000',
+        '00000000-0000-4092-b004-000000000000',
+        2,
+        'API Security Standards',
+        'All public and internal APIs shall implement OAuth 2.0 or equivalent authentication. API rate limiting, input validation, and logging shall be enforced at the gateway layer.',
+        '2.1', 'Integration Security',
+        30, 48,
+        'manual', 'pending_review', NULL, NULL
+    ),
+    (
+        '00000000-0000-4092-c015-000000000000',
+        '00000000-0000-4092-a003-000000000000',
+        '00000000-0000-4092-b004-000000000000',
+        3,
+        'Service Availability Guarantee',
+        'The provider shall guarantee 99.99% availability for production workloads, backed by contractual SLAs with financial remedies for non-compliance.',
+        '3.1', 'Service Levels',
+        55, 68,
+        'auto_extracted', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-02-01 09:00:00'
+    ),
+    (
+        '00000000-0000-4092-c016-000000000000',
+        '00000000-0000-4092-a003-000000000000',
+        '00000000-0000-4092-b004-000000000000',
+        4,
+        'Data Portability Requirements',
+        'The provider shall support data export in open, non-proprietary formats upon contract termination. A complete data extraction shall be achievable within 30 business days.',
+        '1.2', 'Data Governance',
+        72, 88,
+        'auto_extracted', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-02-01 09:30:00'
+    ),
+    (
+        '00000000-0000-4092-c017-000000000000',
+        '00000000-0000-4092-a003-000000000000',
+        '00000000-0000-4092-b004-000000000000',
+        5,
+        'Subcontractor Disclosure',
+        'The provider shall disclose all subcontractors with access to agency data prior to engagement. Changes to subcontractor arrangements shall require 30 days advance written notice.',
+        '4.1', 'Vendor Management',
+        95, 110,
+        'manual', 'approved',
+        (SELECT user_id FROM temp_user_id), '2026-02-01 10:00:00'
+    ),
+    (
+        '00000000-0000-4092-c018-000000000000',
+        '00000000-0000-4092-a003-000000000000',
+        '00000000-0000-4092-b004-000000000000',
+        6,
+        'Encryption at Rest',
+        'All agency data stored by the provider shall be encrypted at rest using AES-256 or equivalent. Encryption keys shall be managed by the agency or a mutually agreed key management service.',
+        '5.1', 'Data Protection',
+        115, 130,
+        'edited', 'rejected',
+        (SELECT user_id FROM temp_user_id), '2026-02-01 10:30:00'
+    ),
+
+    -- ── Project a004: Legacy System Decommission Audit (archived) ──────────
+    (
+        '00000000-0000-4092-c019-000000000000',
+        '00000000-0000-4092-a004-000000000000',
+        '00000000-0000-4092-b005-000000000000',
+        1,
+        'Data Migration Plan',
+        'A detailed data migration plan shall be developed that identifies all data stores, transformation rules, validation criteria, and rollback procedures before decommission begins.',
+        '1.1', 'Migration Planning',
+        5, 22,
+        'auto_extracted', 'pending_review', NULL, NULL
+    ),
+    (
+        '00000000-0000-4092-c020-000000000000',
+        '00000000-0000-4092-a004-000000000000',
+        '00000000-0000-4092-b005-000000000000',
+        2,
+        'Legacy Interface Mapping',
+        'All interfaces to and from the legacy system shall be cataloged, including data flows, protocols, and downstream consumers, to ensure continuity during transition.',
+        '2.1', 'System Analysis',
+        28, 42,
+        'auto_extracted', 'pending_review', NULL, NULL
+    ),
+    (
+        '00000000-0000-4092-c021-000000000000',
+        '00000000-0000-4092-a004-000000000000',
+        '00000000-0000-4092-b005-000000000000',
+        3,
+        'Decommission Timeline',
+        'The decommission schedule shall be finalized no later than 60 days prior to the target shutdown date. Milestones shall include data migration, parallel run, and final cutover.',
+        '3.1', 'Project Schedule',
+        48, 62,
+        'auto_extracted', 'approved',
+        (SELECT user_id FROM temp_user_id), '2025-11-30 16:00:00'
+    ),
+    (
+        '00000000-0000-4092-c022-000000000000',
+        '00000000-0000-4092-a004-000000000000',
+        '00000000-0000-4092-b005-000000000000',
+        4,
+        'Data Retention Compliance',
+        'All data subject to federal records retention schedules shall be preserved in the target system or archived in accordance with NARA guidelines before the legacy system is decommissioned.',
+        '4.1', 'Regulatory Requirements',
+        68, 85,
+        'manual', 'approved',
+        (SELECT user_id FROM temp_user_id), '2025-11-30 16:30:00'
+    ),
+    (
+        '00000000-0000-4092-c023-000000000000',
+        '00000000-0000-4092-a004-000000000000',
+        '00000000-0000-4092-b005-000000000000',
+        5,
+        'Rollback Procedures',
+        'Documented rollback procedures shall be in place for each decommission phase. The legacy system shall remain available in read-only mode for 90 days following cutover.',
+        '5.1', 'Risk Mitigation',
+        90, 105,
+        'edited', 'approved',
+        (SELECT user_id FROM temp_user_id), '2025-12-01 09:00:00'
+    ),
+    (
+        '00000000-0000-4092-c024-000000000000',
+        '00000000-0000-4092-a004-000000000000',
+        '00000000-0000-4092-b005-000000000000',
+        6,
+        'Stakeholder Sign-off Requirements',
+        'Written sign-off from all designated stakeholders shall be obtained before each decommission phase proceeds. The sign-off register shall be maintained as part of the project record.',
+        '6.1', 'Governance',
+        112, 125,
+        'auto_extracted', 'rejected',
+        (SELECT user_id FROM temp_user_id), '2025-12-01 09:30:00'
+    )
+ON CONFLICT (id) DO UPDATE SET
+    project_id          = EXCLUDED.project_id,
+    source_document_id  = EXCLUDED.source_document_id,
+    line_item_number    = EXCLUDED.line_item_number,
+    compliance_item_title = EXCLUDED.compliance_item_title,
+    compliance_item_text  = EXCLUDED.compliance_item_text,
+    outline_number      = EXCLUDED.outline_number,
+    section_name        = EXCLUDED.section_name,
+    document_start_line = EXCLUDED.document_start_line,
+    document_end_line   = EXCLUDED.document_end_line,
+    extraction_method   = EXCLUDED.extraction_method,
+    status              = EXCLUDED.status,
+    reviewed_by         = EXCLUDED.reviewed_by,
+    reviewed_at         = EXCLUDED.reviewed_at;
+
+-- ============================================================================
+-- STEP 6: Advance line_item_number sequence past seeded values
+-- ============================================================================
+DO $$
+DECLARE
+    seq_name TEXT;
+    max_val  BIGINT;
+    cur_val  BIGINT;
+BEGIN
+    seq_name := pg_get_serial_sequence('compliance_items', 'line_item_number');
+    SELECT COALESCE(MAX(line_item_number), 0) INTO max_val FROM compliance_items;
+    EXECUTE format('SELECT last_value FROM %s', seq_name) INTO cur_val;
+    PERFORM setval(seq_name, GREATEST(max_val, cur_val));
+END $$;
+
+COMMIT;
+
+-- ============================================================================
+-- Cleanup temp table
+-- ============================================================================
+DO $$
+BEGIN
+    DROP TABLE IF EXISTS temp_user_id;
+END $$;
+
+-- ============================================================================
+-- Summary
+-- ============================================================================
+DO $$
+DECLARE
+    v_projects  INTEGER;
+    v_docs      INTEGER;
+    v_proj_docs INTEGER;
+    v_items     INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO v_projects
+      FROM compliance_projects
+     WHERE id::text LIKE '00000000-0000-4092-a%';
+
+    SELECT COUNT(*) INTO v_docs
+      FROM compliance_documents
+     WHERE id::text LIKE '00000000-0000-4092-b%';
+
+    SELECT COUNT(*) INTO v_proj_docs
+      FROM compliance_project_documents
+     WHERE project_id::text LIKE '00000000-0000-4092-a%';
+
+    SELECT COUNT(*) INTO v_items
+      FROM compliance_items
+     WHERE id::text LIKE '00000000-0000-4092-c%';
+
+    RAISE NOTICE '=== PRCR-1092: Compliance Seed Summary ===';
+    RAISE NOTICE 'compliance_projects:          % rows', v_projects;
+    RAISE NOTICE 'compliance_documents:         % rows', v_docs;
+    RAISE NOTICE 'compliance_project_documents: % rows', v_proj_docs;
+    RAISE NOTICE 'compliance_items:             % rows', v_items;
+    RAISE NOTICE '=== Done ===';
+END $$;

@@ -5,7 +5,6 @@ ONERING/
 rohan-python-api/
 rohan_api-parent/
 rohan_ui-parent/
-archive/
 
 # Cursor/editor internals
 .cursor/
