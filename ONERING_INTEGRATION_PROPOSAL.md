@@ -2,40 +2,45 @@
 
 ## Executive Summary
 
-All three modules independently reinvent capabilities ONERING already has — document ingestion, KM-style retrieval, requirement extraction, structured generation. Compliance has the strongest structural overlap; Answer Engine v2 has the cleanest direct swap; Acquisition Center is the most diverse and benefits from gradual sub-feature migration.
+All three modules independently reinvent capabilities ONERING already has — document ingestion, KM-style retrieval, requirement extraction, structured generation. **Compliance has the strongest structural overlap and has not yet launched**, making it the natural first integration target. Answer Engine v2 (already in production) and Acquisition Center are deferred several months while Compliance proves the engine pattern.
 
 The pattern that makes sense: ONERING runs as the AI compute layer behind rohan-python-api, exposing capabilities both as fast inline endpoints and as async DAG runs. NestJS modules become thinner shells that own user-facing state (projects, threads, items) and delegate AI work to the engine.
+
+**Recommended sequence:** ship a thin ONERING-driven Compliance launch in the next few weeks (Phase 1: unified ingestion endpoint + per-org tenancy + requirements extraction + items review). Expand Compliance scope post-launch (Phase 2: additional extraction tabs, response-analysis DAG, XLSX export). Migrate Answer Engine v2 (Phase 3) and Acquisition Center (Phase 4) as later phases once the wrapper layer is proven.
 
 ---
 
 ## Module Snapshots
 
 ### Acquisition Center (Procurement Writer)
+
 Multi-step procurement drafting — Market Research Assistant (MRA), RFI Assistant, Requirements Discovery, Document Library, Template Generator, Toolkits. Backend at `rohan_api/src/procurement-writer/` is a 1,700-line service with streaming SSE controllers and a `wizard_state` JSONB blob for multi-step state. AI pattern is consistent across assistants: fetch prompt by feature flag → enrich with `addDocContent()` (manual document-summary append) and `addVectorDBResults()` (pgvector query for 10 paragraphs + 10 tables) → `handleCompletion()` for SSE streaming.
 
 ### Answer Engine v2
+
 Threaded conversational Q&A with KM retrieval, deep research (o3), file-context uploads, streaming responses, aggregates, and summaries. Backend at `rohan_api/src/answer-engine-v2/` is a 2,300-line service with advisory locks, `Question`/`Answer`/`Thread`/`Aggregate`/`Summary` entities, and heavy use of `AgentWorkflowService.getKmWorkflow()` (LangChain-based LLM-as-retriever) plus `RfpPythonServer.extract-file-content` for file parsing. Determines a follow-up route (REUSE_EXISTING_KM_CONTEXT vs RERUN_KM vs RESEARCH_WITH_KM_CONTEXT vs RESEARCH_ONLY) before streaming.
 
 ### Compliance
-Source-document compliance item extraction → manual review → response-document upload → automated cross-check → reviewer adjudication. Inline tag UI on the document viewer (recent PRCR-1517/1519/1544 work). Backend at `rohan_api/src/compliance/` has entities `ComplianceProject`, `ComplianceItem`, `ComplianceCheck`, `ComplianceItemEvidence`, `ComplianceDocument`, `ComplianceResponse`. Auto-extraction is async: Service Bus → rohan-python-api (GPT-5.2 extracts shall-statements with line offsets) → completion handler updates DB.
+
+Source-document compliance item extraction → manual review → response-document upload → automated cross-check → reviewer adjudication. Inline tag UI on the document viewer (recent PRCR-1517/1519/1544 work). Backend at `rohan_api/src/compliance/` has entities `ComplianceProject`, `ComplianceItem`, `ComplianceCheck`, `ComplianceItemEvidence`, `ComplianceDocument`, `ComplianceResponse`. Auto-extraction is async: Service Bus → rohan-python-api (GPT-5.2 extracts shall-statements with line offsets) → completion handler updates DB. **Not yet in production — launch target is approximately a few weeks out, no specific feature commitments, sales wants to start selling the module as soon as it ships.**
 
 ---
 
 ## ONERING Capability Map
 
-| ONERING capability | Compliance | AE v2 | Acquisition Center |
-|---|---|---|---|
-| Document ingestion (Docling + OCR + canonical markdown + line numbering + chunking) | ✅ Replace inline rohan-python-api path | ✅ Replace `extract-file-content` | ✅ Replace doc-summary-only flow |
-| `pipelines.requirements` (shall/must extraction with line evidence) | ✅ Direct replacement for compliance item extraction | — | ✅ Replaces Requirements Discovery |
-| `pipelines.structure` / `evaluation` / `instructions` / `attachments` / `metadata` | ✅ Net-new tabs/views | — | ✅ Could power Template Generator |
-| `pipelines.compliance_matrix` (six-tab XLSX + JSON) | ✅ Direct replacement; gives free export | — | — |
-| KM retrieval (LLM-as-retriever with query plans) | Improves response analysis | ✅ Direct replacement for `getKmWorkflow` | ✅ Replace `addVectorDBResults` |
-| Section writer (draft → critique → revise + consistency ledger) | Optional: auto-generate compliance commentary | ✅ Aggregates / summaries quality boost | ✅ Replace one-shot LLM calls |
-| GOLD library | — | Opt-in past-proposal answer source | ✅ Vendor / template suggestions from past wins |
-| Render layer (DOCX/PPTX/XLSX with anchor amendments) | ✅ Compliance matrix export | ✅ Aggregate / answer export | ✅ Replace DocxExportService |
-| DAG orchestrator (resumable, parallel) | Wrap per-project runs | Resumable deep-research | ✅ Replaces `wizard_state` JSONB |
-| Deep research (o3 + web search, structured) | — | ✅ Replace direct o3 calls | ✅ Replace MRA deep research |
-| SAM.gov discovery | — | — | ✅ Connect to existing `opp_id` field |
+| ONERING capability                                                                  | Compliance                                           | AE v2                                     | Acquisition Center                              |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------- | ----------------------------------------------- |
+| Document ingestion (Docling + OCR + canonical markdown + line numbering + chunking) | ✅ Replace inline rohan-python-api path              | ✅ Replace `extract-file-content`         | ✅ Replace doc-summary-only flow                |
+| `pipelines.requirements` (shall/must extraction with line evidence)                 | ✅ Direct replacement for compliance item extraction | —                                         | ✅ Replaces Requirements Discovery              |
+| `pipelines.structure` / `evaluation` / `instructions` / `attachments` / `metadata`  | ✅ Net-new tabs/views                                | —                                         | ✅ Could power Template Generator               |
+| `pipelines.compliance_matrix` (six-tab XLSX + JSON)                                 | ✅ Direct replacement; gives free export             | —                                         | —                                               |
+| KM retrieval (LLM-as-retriever with query plans)                                    | Improves response analysis                           | ✅ Direct replacement for `getKmWorkflow` | ✅ Replace `addVectorDBResults`                 |
+| Section writer (draft → critique → revise + consistency ledger)                     | Optional: auto-generate compliance commentary        | ✅ Aggregates / summaries quality boost   | ✅ Replace one-shot LLM calls                   |
+| GOLD library                                                                        | —                                                    | Opt-in past-proposal answer source        | ✅ Vendor / template suggestions from past wins |
+| Render layer (DOCX/PPTX/XLSX with anchor amendments)                                | ✅ Compliance matrix export                          | ✅ Aggregate / answer export              | ✅ Replace DocxExportService                    |
+| DAG orchestrator (resumable, parallel)                                              | Wrap per-project runs                                | Resumable deep-research                   | ✅ Replaces `wizard_state` JSONB                |
+| Deep research (o3 + web search, structured)                                         | —                                                    | ✅ Replace direct o3 calls                | ✅ Replace MRA deep research                    |
+| SAM.gov discovery                                                                   | —                                                    | —                                         | ✅ Connect to existing `opp_id` field           |
 
 ---
 
@@ -44,7 +49,7 @@ Source-document compliance item extraction → manual review → response-docume
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ rohan_ui (Angular)                                          │
-│   compliance/   answer-engine-v2/   acquisition-center/    │
+│   compliance/   answer-engine-v2/   acquisition-center/     │
 └─────────────────┬───────────────────────────────────────────┘
                   │ REST + SSE
 ┌─────────────────▼───────────────────────────────────────────┐
@@ -78,40 +83,109 @@ The key insight: ONERING already supports `--steps-factory mod:fn`. Each module 
 
 ## Phased Strategy
 
-### Phase 1 — Unified Ingestion Service (foundation)
-Wrap ONERING's ingestion DAG (`ingestion.docling_parse_base` through `ingestion.chunk_plan`) as a fast endpoint on rohan-python-api: `POST /ingest/document` → `{canonical_md, line_map, chunk_plan, doc_id}` stored in a shared MinIO bucket keyed by `org_id/doc_id`. All three modules switch to this for new uploads; existing summary fields stay populated for backwards compatibility. Cheapest, highest-leverage starting point — no data migration, no module refactor, just a new optional path.
+### Phase 1 — Compliance Launch on ONERING (target: ~few weeks)
 
-### Phase 2 — Unified KM Retrieval
-Extract `run_km_retrieval()` and `generate_km_query_plan()` into a Python package and expose `POST /km/retrieve`. AE v2 swaps `getKmWorkflow()`; Acquisition Center swaps the `addVectorDBResults()` enrichment; Compliance gains a tool for response-document analysis ("does this response contain evidence for compliance item X?"). Unifies three different retrieval implementations into one.
+Compliance is pre-production with no user data, real sales urgency, and the strongest structural overlap with ONERING. Launching is the natural moment to commit to ONERING-as-engine without paying any migration cost. Phase 1 absorbs the foundational wrapper work (originally proposed as a separate phase) because Compliance needs it anyway and can't wait.
 
-### Phase 3 — Compliance Pivots to ONERING-Driven (the flagship)
-The most visible "ONERING as engine" demonstration:
+**In-scope for launch:**
 
-1. Source-document upload triggers a full ONERING run (custom step graph: ingestion → all six extraction pipelines → `pipelines.compliance_matrix`). Async, status tracked via existing Service Bus pattern.
-2. `ui_projection_requirements.json` becomes the source of truth for compliance items. The `compliance_items` table becomes a review-state mirror (`status`, `reviewed_by`, `reviewedAt`, `userNotes`) pointing at ONERING artifacts.
-3. Net-new tabs come for free: structure, evaluation, instructions, attachments, metadata. Today the module only exposes requirements.
-4. Compliance matrix XLSX export hooks up to ONERING's already-styled six-tab workbook.
-5. Response-document analysis becomes a separate ONERING DAG: ingest response → for each approved item, KM-retrieve evidence → produce `ComplianceCheck` payload with `automatedStatus` and evidence spans. Replaces the current rohan-python-api inline auto-tag flow.
-6. Tag UI work (PRCR-1517/1519/1544) is preserved unchanged — tags are positional UI overlays, items now sourced from ONERING but the rendering doesn't care.
+1. **Unified ingestion endpoint on rohan-python-api.** `POST /ingest/document` wraps ONERING's ingestion DAG (`ingestion.docling_parse_base` through `ingestion.chunk_plan`) and returns `{canonical_md, line_map, chunk_plan, doc_id}`, with artifacts stored in MinIO keyed by `org_id/doc_id`. Designed for Compliance's needs first but with documented multi-consumer awareness so AE v2 and Acquisition Center can adopt it later without redesign.
 
-Migration: existing projects keep their data; new uploads use ONERING; offer a "Re-analyze with ONERING" action for backfill.
+2. **Per-org tenancy.** Workspace partitioning, scoped MinIO buckets, scoped GOLD/KM library paths. Non-negotiable — the moment Compliance is in production, the tenancy model is fixed and cross-tenant leakage becomes a credibility-destroying P0.
 
-### Phase 4 — Answer Engine v2 Engine-Backed Q&A
-Once Phases 1–2 land, AE v2's backend thins considerably. `getKmWorkflow()` → Phase 2 endpoint. `extract-file-content` → Phase 1 endpoint. Aggregates and summaries → ONERING section writer (draft/critique/revise + consistency ledger gives a measurable quality jump for cross-question summaries). GOLD library as an optional answer source for proposal-team Q&A like "what did we say about cyber past performance in the last DoD bid?" Threads, execution locks, file management, RBAC stay in NestJS — they're user-facing concerns, not engine concerns. Defer the deep-research consolidation; AE v2's o3 path and ONERING's are functionally similar.
+3. **Custom Compliance step graph.** Module-specific factory `compliance_review:build_steps` running ingestion + `pipelines.requirements` only. Other extraction pipelines deferred to Phase 2 to keep launch scope tight.
 
-### Phase 5 — Acquisition Center Sub-Feature Migration
+4. **Compliance items as review-state mirrors.** `ui_projection_requirements.json` is the source of truth; the `compliance_items` table stores `status`, `reviewed_by`, `reviewedAt`, `userNotes` plus pointers (`run_id`, `requirement_id`). No override-resolution UX needed because there are no pre-existing user edits to reconcile.
 
-| Sub-feature | Migration |
-|---|---|
+5. **Existing UI works against the new source.** Tag UI work (PRCR-1517/1519/1544) is preserved unchanged. Items now flow from ONERING but the rendering layer doesn't care.
+
+6. **Service Bus + completion handler** wired the same way the current rohan-python-api integration works, just kicking off ONERING runs instead of inline LLM calls.
+
+**Out-of-scope for launch (deferred to Phase 2):**
+
+- The other five extraction tabs (structure, evaluation, instructions, attachments, metadata) — net-new feature work, exciting to ship but not needed for launch.
+- Compliance matrix XLSX export — deferrable.
+- Response-analysis DAG — genuinely new ONERING code; concentrates production-scale unknowns. Sales can demo Compliance as "AI-extracted requirements with review"; automated response checking is "coming next."
+- Generalizing the wrapper layer for AE v2 and Acquisition Center.
+
+**Checkpoint discipline:** define an explicit milestone at week one. If tenancy + ingestion endpoint + custom step graph aren't tracking, fall back to launching Compliance on the current architecture and refactor onto ONERING in the following weeks while user count is still small. Pre-production status keeps that fallback cheap. The version to avoid is "we shipped half-done because we tried to do too much in too little time."
+
+### Phase 2 — Compliance Expansion (weeks/months after launch)
+
+Once Phase 1 is live and stable:
+
+- **Additional extraction tabs.** Surface `ui_projection_*.json` for structure, evaluation, instructions, attachments, and metadata as new tabs. Each tab is an independently shippable deliverable.
+- **Compliance matrix XLSX export.** Hook up ONERING's already-styled six-tab workbook.
+- **Response-analysis DAG.** Custom step graph: ingest response → for each approved item, KM-retrieve evidence from response → produce `ComplianceCheck` payload with `automatedStatus` and evidence spans. Replaces the current rohan-python-api inline auto-tag flow. This phase concentrates the production-scale unknowns; it benefits from launch-period learnings on rate limits, concurrency, and tenancy edge cases.
+
+### Phase 3 — Answer Engine v2 Migration (months out)
+
+Once Phase 1's wrapper layer is proven and Phase 2 has shaken out the harder unknowns:
+
+- Generalize the unified ingestion endpoint for AE v2's file-context uploads (replacing `RfpPythonServer.extract-file-content`).
+- Replace `AgentWorkflowService.getKmWorkflow()` with calls to a unified `POST /km/retrieve` endpoint backed by ONERING's `run_km_retrieval()`.
+- Aggregates and summaries → ONERING section writer (draft / critique / revise + consistency ledger).
+- Add GOLD library as an opt-in past-proposal answer source. Requires resolving GOLD partitioning model first.
+- Threads, execution locks, file management, and RBAC stay in NestJS — user-facing concerns, not engine concerns.
+- Defer the deep-research consolidation; AE v2's o3 path and ONERING's are functionally similar.
+
+### Phase 4 — Acquisition Center Sub-Feature Migration (further out)
+
+| Sub-feature               | Migration                                                                                                                                     |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Market Research Assistant | Custom DAG: discovery → deep research (o3) → vendor research → draft acquisition document. Replaces inline streaming with resumable manifest. |
-| RFI Assistant | Section writer (draft/critique/revise) replaces one-shot LLM. |
-| Requirements Discovery | Direct call to `pipelines.requirements`. |
-| Document Library | Phase 1 ingestion replaces summary-only path. |
-| Template Generator | `pipelines.structure` reverse-engineers templates from past proposals. |
-| Toolkits | No engine work; storage feature stays as-is. |
-| Vector DB calls | Phase 2 KM retrieval replaces them. |
+| RFI Assistant             | Section writer (draft/critique/revise) replaces one-shot LLM.                                                                                 |
+| Requirements Discovery    | Direct call to `pipelines.requirements`.                                                                                                      |
+| Document Library          | Phase 1 ingestion endpoint replaces summary-only path.                                                                                        |
+| Template Generator        | `pipelines.structure` reverse-engineers templates from past proposals.                                                                        |
+| Toolkits                  | No engine work; storage feature stays as-is.                                                                                                  |
+| Vector DB calls           | Phase 3 KM retrieval endpoint replaces them.                                                                                                  |
 
 `wizard_state` JSONB shrinks to a thin pointer to ONERING run IDs + step status; the orchestrator's manifest does the heavy lifting.
+
+---
+
+## Timeline & Effort Estimate
+
+Estimates below assume 2–3 engineers split across rohan-python-api, ONERING-side work, and rohan_api / rohan_ui integration, with at least one engineer having strong existing ONERING context. Numbers are realistic ranges, not best-case.
+
+### Per-phase ranges
+
+**Phase 1 — Compliance Launch on ONERING (thin scope): 4–6 calendar weeks.** Roughly 10–15 engineer-weeks of work split across tenancy (2–3), unified ingestion endpoint (1–2), custom Compliance step graph (1–2), DB schema + completion handler integration (1–2), Service Bus translation (1–2), UI adaptation against the new source (1), and testing/hardening (2–3). The "few weeks" target in the proposal is achievable at the optimistic end of this range with strong execution and pre-existing ONERING fluency on the team. Tighter timelines start trading away tenancy or testing — both bad trades.
+
+**Phase 2 — Compliance Expansion: 2–3 calendar months.** The five additional extraction tabs are quick (~1 engineer-week each, mostly UI work over already-extracted JSON). XLSX export is a short hookup (1–2 engineer-weeks). The response-analysis DAG is the big chunk — 8–12 engineer-weeks for step-graph design, prompt engineering, per-item evidence retrieval, `ComplianceCheck` integration, and production hardening. Total ~14–19 engineer-weeks.
+
+**Phase 3 — Answer Engine v2 Migration: 3–5 calendar months.** Wide range driven by two unknowns: (1) GOLD library partitioning design — could be 2 weeks if the team picks a simple per-org model, 1–2 months if it requires per-proposal access control; (2) behavior-parity validation against AE v2's already-shipped behavior, which can't be skipped. Engineer-weeks: ingestion endpoint generalization (1–2), KM retrieval endpoint + AE v2 swap (3–4), KM cost/latency measurement spike (1–2), behavior-parity validation (2–4), aggregate/summary integration via section writer (2–3), GOLD partitioning design + integration (4–7), streaming/state-model translation work (2–4), production hardening (3–4). Total ~18–30 engineer-weeks.
+
+**Phase 4 — Acquisition Center Sub-Feature Migration: 3–4 calendar months.** Sub-features are independently sized: MRA is the largest (4–6 engineer-weeks), RFI moderate (2–3), Requirements Discovery and Document Library small (1–2 each), Template Generator novel (3–4), vector-DB replacement spans all sub-features (2–3), wizard-state migration (2–3), testing and hardening (3–4). Total ~18–26 engineer-weeks.
+
+### Totals
+
+- **Sequential execution:** 8–14 calendar months for the full four-phase plan with 2–3 engineers.
+- **With overlap** (Phase 2 starts while Phase 1 stabilizes; Phase 3 begins while Phase 2 winds down): 6–10 calendar months.
+
+### Comparison to initial estimate
+
+A 3-month / 2–3 engineer estimate (~18–27 engineer-weeks) is realistic for **Phase 1 plus the bulk of Phase 2** — shipping Compliance fully on ONERING with all extraction tabs, XLSX export, and response analysis. It is not enough for the full four-phase plan that includes AE v2 and Acquisition Center.
+
+Given the proposal's recommendation to defer Phases 3–4 by months anyway, the relevant question is whether 3 months gets you Phases 1–2. Honest answer: yes at the optimistic end, with realistic risk of slipping to 4 months. The harder constraint is hitting the few-weeks launch window for Phase 1 alone, not the multi-month Phase 1+2 timeline.
+
+### What drives variance
+
+- **Tenancy complexity.** If GOLD/KM partitioning ends up needing per-proposal access control rather than per-org, Phase 3 estimates expand by 2–4 weeks.
+- **Streaming-through-engine decision.** Choosing option (a) — engine emits in-progress events — adds 2–4 weeks of ONERING-side work, deferrable to Phase 3 but not avoidable.
+- **First-production shakedown.** ONERING has never run as a real-time service behind a UI. Plan for 2–3 weeks of post-launch stabilization that's hard to compress.
+- **Engineer ramp on ONERING internals.** If only one engineer knows the manifest schema, step factory pattern, and artifact layout, parallelism is limited until others ramp. Two ONERING-fluent engineers is the sweet spot.
+- **Cross-team coordination.** GOLD partitioning, scope cuts, launch-date negotiation, sales demo scoping — these consume calendar time without consuming engineer time.
+
+### Single numbers to plan against
+
+If forced to commit to point estimates:
+- **Phase 1: 6 weeks** with an explicit fallback to current architecture if tracking poorly at the week-2 checkpoint.
+- **Phase 1 + Phase 2: 4 months** for 2–3 engineers (one ramp month, three execution months).
+- **Full four-phase plan: 10 months** for 2–3 engineers, with overlap.
+
+Your initial 3-month / 2–3 engineer estimate is reasonable if "the work" means Compliance-only on ONERING (Phases 1–2). For the full proposal scope as written, plan for closer to 10 months.
 
 ---
 
@@ -119,84 +193,87 @@ Once Phases 1–2 land, AE v2's backend thins considerably. `getKmWorkflow()` �
 
 1. **Latency vs. interactivity.** ONERING pipelines take minutes; modules expect interactive responses. The split between fast inline endpoints (KM retrieval, single section, single ingest) and async DAG endpoints (full extraction, full write) needs a deliberate design pass, including the streaming contract.
 
-2. **Per-org tenancy.** ONERING was designed single-operator. Production needs `org_id` partitioning on workspaces, MinIO buckets, GOLD libraries, and KM corpora. The wrapper layer is the natural place — it can scope `ARC_WORKSPACE_ROOT` per request — but GOLD and KM partitioning need explicit design (global library? per-org? hybrid?).
+2. **Per-org tenancy.** ONERING was designed single-operator. Production needs `org_id` partitioning on workspaces, MinIO buckets, GOLD libraries, and KM corpora. The wrapper layer is the natural place — it can scope `ARC_WORKSPACE_ROOT` per request — but GOLD and KM partitioning need explicit design (global library? per-org? hybrid?). This work has to land _with_ Phase 1, not after.
 
-3. **Source-of-truth conflicts.** When `compliance_items.complianceItemTitle` exists in PostgreSQL *and* `ui_projection_requirements.json`, which wins? Recommended: ONERING artifacts immutable per-extraction; PostgreSQL stores review-only state plus a pointer (`run_id`, `requirement_id`); user edits create override rows rather than mutating artifacts. Matches ONERING's append-only philosophy.
+3. **State models don't match.** Compliance uses Service Bus + completion handlers. ONERING uses manifest-based state. The wrapper layer translates: rohan-python-api owns run lifecycle and emits Service Bus messages on key transitions; NestJS continues to consume them. AE v2's advisory locks add a third model in Phase 3.
 
-4. **State models don't match.** Compliance uses Service Bus + completion handlers. AE v2 uses execution locks + observables. ONERING uses manifest-based state. The wrapper layer translates: rohan-python-api owns run lifecycle and emits Service Bus messages on key transitions; NestJS continues to consume them.
+4. **Streaming through the engine.** Modules expect SSE; ONERING's `llm_calls/.../` artifacts are written _after_ calls complete. Either (a) the engine emits in-progress events that rohan-python-api forwards, or (b) NestJS streams directly from OpenAI and the engine sees only finalized artifacts. (a) preserves the engine's audit trail at the cost of ONERING changes; (b) is simpler. Compliance's launch flow is async (Service Bus) so streaming pressure is lower in Phase 1; Phase 3 (AE v2) is where this decision really bites.
 
-5. **Streaming through the engine.** Modules expect SSE; ONERING's `llm_calls/.../` artifacts are written *after* calls complete. Either (a) the engine emits in-progress events that rohan-python-api forwards, or (b) NestJS streams directly from OpenAI and the engine sees only finalized artifacts. (a) preserves the engine's audit trail at the cost of ONERING changes; (b) is simpler.
+5. **Custom step graph governance.** If every module ships a `build_steps` factory, expect step-name collisions and prompt drift. Suggest a registry pattern in ONERING — modules register namespaced prefixes (`compliance.*`, `mra.*`, `ae.*`) and the orchestrator validates uniqueness.
 
-6. **Existing data.** Three options: (i) leave old data alone, only new uploads go through ONERING; (ii) one-time backfill that re-extracts existing source documents; (iii) lazy migration on first read. Default to (i) with opt-in (ii) per project.
+6. **Response analysis is genuinely new.** ONERING doesn't currently have "compare a response document against extracted requirements." That work lands in Phase 2, not Phase 1, but it should be designed into the custom step graph from the start so the Phase 1 architecture leaves room for it.
 
-7. **Custom step graph governance.** If every module ships a `build_steps` factory, expect step-name collisions and prompt drift. Suggest a registry pattern in ONERING — modules register namespaced prefixes (`compliance.*`, `mra.*`, `ae.*`) and the orchestrator validates uniqueness.
+7. **KM cost and latency for AE v2 (Phase 3 concern).** ONERING KM is brute-force chunk-by-chunk LLM scanning. AE v2 today might make 1 LLM call per question; on ONERING KM it could be 50+. Worth a measurement spike before committing in Phase 3 — not a Phase 1 blocker.
 
-8. **Response analysis is genuinely new.** ONERING doesn't currently have "compare a response document against extracted requirements" — that's a Compliance-specific addition. The one place where ONERING gets *new* code rather than just being a destination for module logic.
+8. **GOLD library partitioning (Phase 3 concern).** Today GOLD is one folder. For AE v2 to use it as an answer source you need per-org curation, possibly per-project filtering, possibly per-proposal access control (past performance can be sensitive). Product work, not plumbing. Phase 3 prerequisite.
 
 ---
 
 ## Tradeoffs: Should This Happen Now?
 
-The plan above is what *could* be done. Whether it should be done *at this point in time* is a separate question. Below is a frank tradeoff analysis — not "pros of consolidation in general" but specifically "should this team make this change now."
+The plan above is what _could_ be done. Whether it should be done _at this point in time_ is a separate question. Below is a frank tradeoff analysis given the current context (Compliance pre-production, ~few-weeks launch target, no specific feature commitments, ONERING is a high-priority initiative with resource availability, AE v2 / Acquisition Center can wait several months).
 
 ### Pros
 
-**1. The duplication tax is compounding.** Every new feature added to AE v2, Acquisition Center, or Compliance today picks one of three different retrieval approaches, three ingestion paths, three prompt-management strategies. Each new MRA sub-assistant is another bespoke LLM streaming endpoint to maintain. The longer you wait, the more code locks in to the current divergence — and divergent systems get harder to unify, not easier.
+**1. Pre-production Compliance status is the cheapest possible moment to commit to ONERING.** No user data, no edits to migrate, no launch promises to break, no behavioral parity bar to clear. Launching on the current architecture and refactoring later is double-work; choosing ONERING up front avoids it.
 
-**2. ONERING knowledge is at peak right now.** The submodule was built recently and the team that wrote it is still close to it. The step-factory pattern, manifest schema, artifact directory layout, prompt versioning conventions all live in the heads of the people who made the decisions. Refactoring against living knowledge is dramatically cheaper than refactoring against archaeology.
+**2. Sales urgency is the forcing function.** Earlier framing flagged "no forcing function" as a risk for big refactors. The Compliance launch is the forcing function — it gives the work a deadline and a why.
 
-**3. Phase 3 isn't *just* a refactor — it ships features.** Compliance today only shows requirements. ONERING already produces structure, evaluation, instructions, attachments, and metadata extractions for free. The Compliance pivot delivers five new tabs of capability as a side effect of the architecture work. Easier to justify to product leadership and easier for users to feel a positive change rather than just plumbing churn.
+**3. ONERING knowledge is at peak right now.** The submodule was built recently and the team that wrote it is still close to it. Refactoring against living knowledge is dramatically cheaper than refactoring against archaeology.
 
-**4. Tenancy work has to happen anyway.** ONERING is single-operator today. For it to run in production behind FastAPI you need per-org workspace partitioning, scoped MinIO buckets, scoped GOLD/KM libraries. That work isn't optional if ONERING ever runs as a real service — and doing it once amortizes the cost across all three modules.
+**4. Phase 1 ships features.** The launch _is_ the feature delivery. ONERING-driven from day one means sales can sell on engine-backed capabilities (canonical line-numbered evidence, audit trail per LLM call, future-ready for response analysis and matrix export) rather than retrofitting that story later.
 
-**5. Audit trail and debuggability are real wins.** ONERING's manifest plus per-call artifact persistence (`llm_calls/{step}/{prompt}/{call_id}/`) is dramatically more debuggable than what the existing modules have. When a user complains about a bad answer or a missed compliance item today, there's no easy way to reconstruct what the LLM saw. ONERING gives you that for free.
+**5. Tenancy work has to happen anyway.** For ONERING to run in production behind FastAPI you need per-org workspace partitioning, scoped MinIO buckets, scoped GOLD/KM libraries. Doing it once for Compliance amortizes the cost across all three modules.
 
-**6. Section writer quality lift is concrete, not speculative.** Acquisition Center's RFI Assistant and AE v2's aggregates use one-shot LLM calls. Switching them to draft → critique → revise with a consistency ledger is a known quality improvement. Users will feel the difference, especially on longer outputs.
+**6. Audit trail and debuggability are real wins.** ONERING's manifest plus per-call artifact persistence (`llm_calls/{step}/{prompt}/{call_id}/`) is dramatically more debuggable than what the existing modules have. This matters more as Compliance ships to actual users.
 
-**7. Strategic narrative.** "ONERING as engine" reframes the product. Instead of "three modules that happen to use AI," it becomes "an AI engine for proposal/acquisition/compliance workflows with surfaces tailored to each." That framing affects roadmap, hiring, and how the company pitches.
+**7. The compounding duplication tax stops growing.** Every new feature added to AE v2, Acquisition Center, or Compliance today picks one of three different retrieval approaches and three ingestion paths. Establishing the engine pattern with Compliance creates the pull for AE v2 and Acquisition Center to follow.
+
+**8. Strategic narrative.** "ONERING as engine" reframes the product from "three modules that happen to use AI" to "an AI engine for proposal/acquisition/compliance workflows with surfaces tailored to each." Compliance launching on ONERING is the demonstration that makes the story credible.
+
+**9. Pre-launch tag UI investment is easy to absorb.** Earlier framing flagged the PRCR-1517/1519/1544 work as a "different roadmap" signal. Inverted: pre-launch polishing means the team is still flexible, and the tag UI work is preserved unchanged because items become source-agnostic.
 
 ### Cons
 
-**1. The scope is large and competes with feature work.** Even Phase 1 touches three modules across frontend, backend, Python service, and submodule. Every phase has a real ramp. If engineering capacity is constrained — and it always is — this displaces feature work. The plan looks tidy in a doc; in practice each phase is two-to-three quarters of work for a small team.
+**1. Few-weeks timeline is tight.** Even with thin scope (ingestion + tenancy + requirements extraction + items review), shipping a production-ready ONERING-driven Compliance in a few weeks is ambitious. The risk isn't the technical work itself — it's timeline slip, where you hit the launch date with something half-done.
 
-**2. There's active in-flight work in these modules.** Compliance has open PRCR tickets (1517, 1519, 1544) polishing the existing tag UI. AE v2 just shipped (the "v2" implies "v1" is recent). Acquisition Center has multiple wizards being iterated on. Refactoring against a moving target is much more expensive than refactoring frozen code.
+**2. First production use of ONERING coincides with first customer demo.** ONERING has never run as a real-time service behind a UI. The launch _is_ the production-scale shakedown. Pre-production status means user impact is zero if something goes wrong, but it also means the polish you'd normally get from a quiet pilot phase isn't on the table.
 
-**3. ONERING isn't production-tested at this scale.** It's a CLI-driven batch system. Running it as a real-time engine behind a UI exposes failure modes that don't exist in batch: timeout handling, partial results, concurrent runs from the same org, API rate-limit fairness across tenants, queue backpressure. The first time a long ONERING run blocks a user-visible operation will be educational and unpleasant.
+**3. Streaming/state-model decisions still need deliberate design.** Reduced pressure in Phase 1 (Compliance flow is async via Service Bus) but the decisions still need to be made cleanly because Phase 3 (AE v2) inherits them. Easy to make pragmatic Phase 1 choices that hurt Phase 3.
 
-**4. The streaming/engine impedance mismatch is structural, not cosmetic.** All three modules are built around SSE. ONERING is built around batch + manifest. Reconciling these requires either teaching ONERING to stream (engine changes that may not land cleanly) or keeping streaming responsibility in NestJS (engine loses audit trail for streamed calls). Neither option is free.
+**4. Engine-side engineering may be underfunded.** "ONERING is a high priority" should include the engine itself, not just integration work. Tenancy, custom step factory hardening, possibly streaming hooks, eventually response-analysis pipeline — these need ONERING-side engineering capacity, not just integration capacity.
 
-**5. State-model translation creates a class of bugs.** Service Bus completion handlers, advisory locks, manifest checkpointing — three mental models for "is the work done." The wrapper layer that translates between them is exactly where subtle bugs live: lost updates, double-processed runs, items stuck in `pending` because a manifest update raced a Service Bus message.
+**5. State-model translation creates a class of bugs.** Service Bus completion handlers + manifest checkpointing — two mental models for "is the work done." The wrapper layer that translates between them is exactly where subtle bugs live: lost updates, double-processed runs, items stuck in `pending` because a manifest update raced a Service Bus message. Hardening takes time.
 
-**6. Compliance source-of-truth migration is genuinely risky.** Today `ComplianceItem.complianceItemTitle` is user-editable. If it moves to mirror `ui_projection_requirements.json`, every existing user edit becomes an "override." If a project is re-analyzed, override resolution becomes a UX problem (new requirement says X, user edit said Y, who wins?). Get this wrong and you either lose user edits or surface confusing inconsistencies.
+**6. ONERING is still evolving.** Building Compliance on a young codebase means every ONERING refactor cascades. Either pin the submodule (and fall behind) or stay current (and absorb breaking changes). The mature pattern is a frozen, versioned engine API — itself another piece of work, deferrable until Phase 3 is in flight.
 
-**7. AE v2 KM is not a free swap.** ONERING KM is structurally similar to `getKmWorkflow`, but wire protocols, latency characteristics, error handling, and streaming contracts differ. Behavioral parity is harder than feature parity, and AE v2 just shipped — disrupting it again creates user fatigue.
+**7. Modules lose iteration independence over time.** Once multiple modules share an engine, prompt and pipeline changes need cross-module regression. Not a Phase 1 issue but a real ongoing tax once Phase 3+ land.
 
-**8. KM costs and latency could spike.** ONERING KM is brute-force chunk-by-chunk LLM scanning. AE v2 today might make 1 LLM call to answer a question; on ONERING KM it might make 50+ (one per chunk plus generation). The product's per-question cost could 10× or worse. Worth a measurement spike before committing.
-
-**9. GOLD library partitioning is an unsolved product question.** Today GOLD is one folder. For AE v2 to use it as an answer source you need per-org GOLD curation, possibly per-project filtering, possibly per-proposal access control (past performance can be sensitive). Product work, not plumbing.
-
-**10. Modules lose iteration independence.** Each module currently has its own prompts, retrieval logic, LLM controller. They can ship a new AE v2 prompt without touching Compliance. Once they share an engine, prompt changes need cross-module regression. The blast radius of every engine change increases.
-
-**11. ONERING is still evolving.** Three modules built on top of a young codebase means every ONERING refactor cascades. You either pin the submodule (and fall behind) or stay current (and absorb breaking changes). The mature pattern is a frozen, versioned engine API — which is itself a piece of work.
-
-**12. There's no forcing function.** No scaling crisis, no committed architecture promise, no customer demand for ONERING-specific features. Big refactors without a forcing function tend to slip and accumulate resentment. They get half-done and leave the codebase worse than before — partly migrated, doubly complex.
-
-**13. Compliance tag UI investment signals a different roadmap.** Recent PRCR-1517/1519/1544 work refines the existing implementation. Someone is making product investments in the current Compliance architecture. Worth understanding what the Compliance product owner thinks about timing before committing.
+**8. AE v2 KM swap will not be free when its turn comes (Phase 3).** Behavioral parity is harder than feature parity, and AE v2 just shipped — disrupting it again in a few months creates user fatigue. Worth flagging now so Phase 3 timing is realistic.
 
 ### Honest Summary
 
-The plan is technically sound. The timing question is the harder one.
+The plan is technically sound and the timing is unusually favorable. Pre-production Compliance + sales urgency + AE v2/Acquisition Center deferral + ONERING priority resource availability is roughly the best window this team will get for an engine consolidation.
 
-**Strong case for doing now:** Phase 1 (unified ingestion) is low-risk and pays back regardless of whether you ever do Phases 3–5. Tenancy hardening has to happen anyway. Knowledge of ONERING is at peak. The duplication is compounding.
+**Recommended path:** thin Compliance launch on ONERING in the few-weeks window (Phase 1), with Phase 2 expanding scope post-launch and Phases 3–4 following months later as separate efforts.
 
-**Strong case for waiting:** AE v2 just shipped. Compliance has in-flight work. ONERING is unproven at production scale. The streaming and state-model mismatches are real and expensive. Without a forcing function, big refactors slip and become half-done.
+**Non-negotiables for Phase 1:**
 
-**A reasonable middle path:** commit to Phase 1 and the tenancy work now, treat them as foundational regardless of the rest of the plan. Run Phase 3 (Compliance pivot) as a deliberate strategic decision with leadership buy-in and a tight scope. Defer Phases 4–5 until Compliance proves the model. That gets you the highest-leverage wins without locking in the disruption.
+- Per-org tenancy. Cross-tenant data leakage is the worst-case failure mode and it ships _with_ the launch.
+- Designed wrapper API. Even though only Compliance uses it on day one, design with awareness that AE v2 / Acquisition Center will adopt later — avoid Compliance-specific shapes that won't generalize.
+- Explicit week-one checkpoint with a fallback to "launch on current architecture, refactor right after" if the timeline isn't tracking. Pre-production status keeps the fallback cheap; not having a fallback is what turns aggressive plans into death marches.
 
-**Biggest concrete risks to flag to leadership:**
-- Compliance source-of-truth migration loses user edits if rushed.
-- KM cost/latency could regress meaningfully — measure before committing.
-- Streaming-through-engine needs an architectural decision *before* you start, not after.
-- Cross-tenant data leakage is the worst-case failure mode of partial tenancy work.
+**Aggressively defer for Phase 1:**
 
-**The single thing I'd push hardest on:** don't start Phase 3 until Phase 1 has been live in production long enough to surface the wrapper-layer problems. Two months minimum. The design assumptions baked into the wrapper become much harder to revisit once three modules depend on them.
+- Response-analysis DAG (genuinely new ONERING code; Phase 2).
+- Other five extraction tabs (Phase 2).
+- XLSX export (Phase 2).
+- Anything for AE v2 or Acquisition Center.
+
+**Open questions worth confirming before starting:**
+
+- Is the few-weeks launch date hard or soft? "Sales wants to sell" is real urgency but may not be a fixed deadline — getting another month or two would meaningfully derisk Phase 1.
+- What does sales actually need to demo? If "AI extracts requirements, your team reviews, response analysis is coming next quarter" is enough, the thin scope works. If sales is committed to demonstrating automated response checking, scope changes.
+- Does "ONERING is a high priority" include ONERING-side engineering capacity (tenancy, step factory hardening)? Integration without engine work isn't enough.
+
+**The single thing to push hardest on:** don't compress tenancy under timeline pressure. If a tradeoff has to be made, drop scope (defer the extraction tabs, defer XLSX export, even defer requirements polish), not tenancy. Everything else is recoverable; tenant leakage is not.
