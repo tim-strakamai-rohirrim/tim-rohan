@@ -135,6 +135,68 @@ Once Phases 1–2 land, AE v2's backend thins considerably. `getKmWorkflow()` �
 
 ---
 
-## Where I'd Start
+## Tradeoffs: Should This Happen Now?
 
-Smallest commitment to validate the strategy: **Phase 1 (unified ingestion) first** — touches all three modules, zero migration risk, clean test of the wrapper pattern. If that lands, **Compliance pivot (Phase 3) next** — highest overlap, gives you a concrete "ONERING as engine" demonstration to evaluate further migrations against.
+The plan above is what *could* be done. Whether it should be done *at this point in time* is a separate question. Below is a frank tradeoff analysis — not "pros of consolidation in general" but specifically "should this team make this change now."
+
+### Pros
+
+**1. The duplication tax is compounding.** Every new feature added to AE v2, Acquisition Center, or Compliance today picks one of three different retrieval approaches, three ingestion paths, three prompt-management strategies. Each new MRA sub-assistant is another bespoke LLM streaming endpoint to maintain. The longer you wait, the more code locks in to the current divergence — and divergent systems get harder to unify, not easier.
+
+**2. ONERING knowledge is at peak right now.** The submodule was built recently and the team that wrote it is still close to it. The step-factory pattern, manifest schema, artifact directory layout, prompt versioning conventions all live in the heads of the people who made the decisions. Refactoring against living knowledge is dramatically cheaper than refactoring against archaeology.
+
+**3. Phase 3 isn't *just* a refactor — it ships features.** Compliance today only shows requirements. ONERING already produces structure, evaluation, instructions, attachments, and metadata extractions for free. The Compliance pivot delivers five new tabs of capability as a side effect of the architecture work. Easier to justify to product leadership and easier for users to feel a positive change rather than just plumbing churn.
+
+**4. Tenancy work has to happen anyway.** ONERING is single-operator today. For it to run in production behind FastAPI you need per-org workspace partitioning, scoped MinIO buckets, scoped GOLD/KM libraries. That work isn't optional if ONERING ever runs as a real service — and doing it once amortizes the cost across all three modules.
+
+**5. Audit trail and debuggability are real wins.** ONERING's manifest plus per-call artifact persistence (`llm_calls/{step}/{prompt}/{call_id}/`) is dramatically more debuggable than what the existing modules have. When a user complains about a bad answer or a missed compliance item today, there's no easy way to reconstruct what the LLM saw. ONERING gives you that for free.
+
+**6. Section writer quality lift is concrete, not speculative.** Acquisition Center's RFI Assistant and AE v2's aggregates use one-shot LLM calls. Switching them to draft → critique → revise with a consistency ledger is a known quality improvement. Users will feel the difference, especially on longer outputs.
+
+**7. Strategic narrative.** "ONERING as engine" reframes the product. Instead of "three modules that happen to use AI," it becomes "an AI engine for proposal/acquisition/compliance workflows with surfaces tailored to each." That framing affects roadmap, hiring, and how the company pitches.
+
+### Cons
+
+**1. The scope is large and competes with feature work.** Even Phase 1 touches three modules across frontend, backend, Python service, and submodule. Every phase has a real ramp. If engineering capacity is constrained — and it always is — this displaces feature work. The plan looks tidy in a doc; in practice each phase is two-to-three quarters of work for a small team.
+
+**2. There's active in-flight work in these modules.** Compliance has open PRCR tickets (1517, 1519, 1544) polishing the existing tag UI. AE v2 just shipped (the "v2" implies "v1" is recent). Acquisition Center has multiple wizards being iterated on. Refactoring against a moving target is much more expensive than refactoring frozen code.
+
+**3. ONERING isn't production-tested at this scale.** It's a CLI-driven batch system. Running it as a real-time engine behind a UI exposes failure modes that don't exist in batch: timeout handling, partial results, concurrent runs from the same org, API rate-limit fairness across tenants, queue backpressure. The first time a long ONERING run blocks a user-visible operation will be educational and unpleasant.
+
+**4. The streaming/engine impedance mismatch is structural, not cosmetic.** All three modules are built around SSE. ONERING is built around batch + manifest. Reconciling these requires either teaching ONERING to stream (engine changes that may not land cleanly) or keeping streaming responsibility in NestJS (engine loses audit trail for streamed calls). Neither option is free.
+
+**5. State-model translation creates a class of bugs.** Service Bus completion handlers, advisory locks, manifest checkpointing — three mental models for "is the work done." The wrapper layer that translates between them is exactly where subtle bugs live: lost updates, double-processed runs, items stuck in `pending` because a manifest update raced a Service Bus message.
+
+**6. Compliance source-of-truth migration is genuinely risky.** Today `ComplianceItem.complianceItemTitle` is user-editable. If it moves to mirror `ui_projection_requirements.json`, every existing user edit becomes an "override." If a project is re-analyzed, override resolution becomes a UX problem (new requirement says X, user edit said Y, who wins?). Get this wrong and you either lose user edits or surface confusing inconsistencies.
+
+**7. AE v2 KM is not a free swap.** ONERING KM is structurally similar to `getKmWorkflow`, but wire protocols, latency characteristics, error handling, and streaming contracts differ. Behavioral parity is harder than feature parity, and AE v2 just shipped — disrupting it again creates user fatigue.
+
+**8. KM costs and latency could spike.** ONERING KM is brute-force chunk-by-chunk LLM scanning. AE v2 today might make 1 LLM call to answer a question; on ONERING KM it might make 50+ (one per chunk plus generation). The product's per-question cost could 10× or worse. Worth a measurement spike before committing.
+
+**9. GOLD library partitioning is an unsolved product question.** Today GOLD is one folder. For AE v2 to use it as an answer source you need per-org GOLD curation, possibly per-project filtering, possibly per-proposal access control (past performance can be sensitive). Product work, not plumbing.
+
+**10. Modules lose iteration independence.** Each module currently has its own prompts, retrieval logic, LLM controller. They can ship a new AE v2 prompt without touching Compliance. Once they share an engine, prompt changes need cross-module regression. The blast radius of every engine change increases.
+
+**11. ONERING is still evolving.** Three modules built on top of a young codebase means every ONERING refactor cascades. You either pin the submodule (and fall behind) or stay current (and absorb breaking changes). The mature pattern is a frozen, versioned engine API — which is itself a piece of work.
+
+**12. There's no forcing function.** No scaling crisis, no committed architecture promise, no customer demand for ONERING-specific features. Big refactors without a forcing function tend to slip and accumulate resentment. They get half-done and leave the codebase worse than before — partly migrated, doubly complex.
+
+**13. Compliance tag UI investment signals a different roadmap.** Recent PRCR-1517/1519/1544 work refines the existing implementation. Someone is making product investments in the current Compliance architecture. Worth understanding what the Compliance product owner thinks about timing before committing.
+
+### Honest Summary
+
+The plan is technically sound. The timing question is the harder one.
+
+**Strong case for doing now:** Phase 1 (unified ingestion) is low-risk and pays back regardless of whether you ever do Phases 3–5. Tenancy hardening has to happen anyway. Knowledge of ONERING is at peak. The duplication is compounding.
+
+**Strong case for waiting:** AE v2 just shipped. Compliance has in-flight work. ONERING is unproven at production scale. The streaming and state-model mismatches are real and expensive. Without a forcing function, big refactors slip and become half-done.
+
+**A reasonable middle path:** commit to Phase 1 and the tenancy work now, treat them as foundational regardless of the rest of the plan. Run Phase 3 (Compliance pivot) as a deliberate strategic decision with leadership buy-in and a tight scope. Defer Phases 4–5 until Compliance proves the model. That gets you the highest-leverage wins without locking in the disruption.
+
+**Biggest concrete risks to flag to leadership:**
+- Compliance source-of-truth migration loses user edits if rushed.
+- KM cost/latency could regress meaningfully — measure before committing.
+- Streaming-through-engine needs an architectural decision *before* you start, not after.
+- Cross-tenant data leakage is the worst-case failure mode of partial tenancy work.
+
+**The single thing I'd push hardest on:** don't start Phase 3 until Phase 1 has been live in production long enough to surface the wrapper-layer problems. Two months minimum. The design assumptions baked into the wrapper become much harder to revisit once three modules depend on them.
