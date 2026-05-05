@@ -84,3 +84,18 @@ Example multi-root workspace for a single feature (save as e.g. `prcr-751-worktr
 2. **Same branch in two worktrees**: Git does not allow the same branch to be checked out in two worktrees. Use different branches (e.g. `feature/PRCR-751` and `feature/other`).
 3. **Fetch once**: All worktrees share the same Git object store; run `git fetch` in the primary clone and branches are visible in every worktree.
 4. **Cleanup**: `git worktree remove <path>` from the primary repo, or delete the worktree directory and run `git worktree prune`.
+
+## Cursor auto-setup
+
+When Cursor creates a worktree (Agents Window, Editor `/worktree`, or CLI), it runs the per-repo setup defined in `<repo>/.cursor/worktrees.json`. Current setup per repo:
+
+| Repo | Setup commands |
+| --- | --- |
+| `rohan_api` | `./scripts/env-decrypt.sh` → `npm ci` |
+| `rohan_ui` | `./scripts/env-decrypt.sh` → `npm ci` |
+| `rohan-python-api` | `./scripts/env-decrypt.sh` → `cd backend && uv sync` |
+| `ONERING` | `uv sync` (copies `.env` from primary if present) |
+
+Requirements: `sops` installed (`brew install sops`) and `az login` with the staging Key Vault role for the SOPS-decrypt step. Without those, install steps still run; the env step fails and surfaces in the **Worktrees Setup** Output channel.
+
+Override per-OS by editing `.cursor/worktrees.json` in the relevant repo. Docs: <https://cursor.com/docs/configuration/worktrees>.
