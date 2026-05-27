@@ -69,6 +69,18 @@ PM-authored prototype) and the screenshot attached to the ticket.
    PRCR-1646. When a backend lands, the API response must be sanitized
    server-side (Phase 1's contract spells this out) so the frontend's
    `[innerHTML]` use stays safe.
+7. `contractType` is a free-form `string` (the human-readable pill label,
+   e.g. `'Hybrid CPFF + FFP'`). The earlier draft of this plan used a
+   closed `AcquisitionPathwayContractType` enum keyed off in SCSS for
+   per-type pill colors; that's gone. Cards render the string verbatim
+   with a single neutral status-chip style. When real data lands with a
+   wider set of contract types, a follow-up ticket can revisit whether
+   per-type colorization is worth re-introducing (it would key off the
+   literal string at that point, since there's no enum to anchor it).
+8. The Material Symbols stylesheet in `src/index.html` pulls in the full
+   icon set (no `icon_names` allow-list). Step 1.6 removes the previous
+   alphabetical list. Future tickets that need a new icon can use it
+   without touching `index.html`.
 
 ## Open questions
 
@@ -118,6 +130,7 @@ files:
   - src/app/pages/acquisition-pathways/constants/pathway-selection.mock.ts
   - src/app/pages/acquisition-pathways/services/pathway-selection.service.ts
   - src/app/pages/acquisition-pathways/services/pathway-selection.service.spec.ts
+  - src/index.html
 verification:
   - npm run lint
   - npm run test -- --include='src/app/pages/acquisition-pathways/services/pathway-selection.service.spec.ts'
@@ -127,10 +140,10 @@ contracts:
   - "1.3 AcquisitionPathwayFeature"
   - "1.4 AcquisitionPathwayVehicleType"
   - "1.5 RequirementsRecordSummary"
-  - "1.6 AcquisitionPathwayContractType"
   - "2.1 PATHWAY_SELECTION_MOCK_PATHWAYS"
   - "2.2 PATHWAY_SELECTION_MOCK_RECORD"
   - "3.1 PathwaySelectionService"
+  - "6.2 Material Symbols icon font"
 ```
 
 **Goal**: Establish the typed data plane and observable state for the
@@ -140,16 +153,16 @@ screen so subsequent phases only ship UI.
 
 - [ ] **1.1** Replace the placeholder `AcquisitionPathway` interface in
   `acquisition-pathways.types.ts` with the full set from contract sections
-  1.1–1.6 (`AcquisitionPathway`, `AcquisitionPathwayTier`,
+  1.1–1.5 (`AcquisitionPathway`, `AcquisitionPathwayTier`,
   `AcquisitionPathwayVehicleType`, `AcquisitionPathwayFeature`,
-  `RequirementsRecordSummary`, `RequirementsRecordField`,
-  `AcquisitionPathwayContractType`).
+  `RequirementsRecordSummary`, `RequirementsRecordField`).
   - File: `src/app/pages/acquisition-pathways/types/acquisition-pathways.types.ts`
   - Remove the existing `id: string; name: string;` placeholder; the new
     `id` is typed as `AcquisitionPathwayTier`.
-  - `AcquisitionPathwayContractType` is a TypeScript `enum` whose values are
-    the human-readable pill labels and whose keys drive the SCSS variant
-    map in Phase 2 (`pathway-card.component.scss`).
+  - `contractType` is a free-form `string` (the human-readable pill label,
+    e.g. `'Hybrid CPFF + FFP'`). No `AcquisitionPathwayContractType` enum —
+    pathway sources (mock today, backend later) own the label text, and the
+    card renders it verbatim with a single neutral pill style.
   - Drop the `/* istanbul ignore file */` directive — the types file no
     longer needs to be excluded from coverage now that real shapes live in it.
 
@@ -196,6 +209,23 @@ screen so subsequent phases only ship UI.
     7. `loading$` flips `true → false` across a `generate()` call. Use
        `fakeAsync` + `tick()` per the workspace rule (prefer fakeAsync over
        setTimeout for async stream assertions).
+
+- [ ] **1.6** Remove the `icon_names` query string from the Material Symbols
+  stylesheet `<link>` in `src/index.html` so the full icon set loads.
+  - File: `src/index.html`
+  - Change the href from
+    `https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined&icon_names=…&display=block`
+    to
+    `https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined&display=block`.
+  - Drop the adjacent `<!-- icon_names MUST be sorted alphabetically. -->`
+    comment — there is no longer a list to keep sorted.
+  - Rationale: this ticket and earlier ones repeatedly mutated the
+    alphabetical allow-list, which is a per-PR footgun and easy to miss in
+    review. Loading the full font costs one extra HTTP cache fetch on first
+    visit and Google serves it as a streaming font subset, so the
+    network/runtime cost is negligible against the ergonomics win (any
+    `tierIcon` / `feature.icon` / future Material symbol just works).
+    Contract section 6.2 captures the new state.
 
 ### Phase 2 — Pathway card presentational component [FRONTEND]
 
@@ -387,7 +417,7 @@ wire it to the service, and expose it at
 
 | Phase | Files                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | `types/acquisition-pathways.types.ts`, `constants/pathway-selection.constants.ts`, `constants/pathway-selection.mock.ts`, `services/pathway-selection.service.ts`, `services/pathway-selection.service.spec.ts`                                                                                                                                                                                                                                                                                                                                                                              |
+| 1     | `types/acquisition-pathways.types.ts`, `constants/pathway-selection.constants.ts`, `constants/pathway-selection.mock.ts`, `services/pathway-selection.service.ts`, `services/pathway-selection.service.spec.ts`, `src/index.html`                                                                                                                                                                                                                                                                                                                                                            |
 | 2     | `components/pathway-card/*` (4 files), `acquisition-pathways.module.ts` (declaration only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 3     | `pages/pathway-selection/*` (4 files), `acquisition-pathways.module.ts` (declaration + providers), `acquisition-pathways-routing.module.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
@@ -417,22 +447,27 @@ wire it to the service, and expose it at
 ### Phase 1 — Pathway types, mock data, and selection service
 
 Replaces the placeholder `AcquisitionPathway` interface in the page module
-with the full set of types from contract sections 1.1–1.6 (pathway shape,
-tier and vehicle unions, feature row, the
-`AcquisitionPathwayContractType` enum used by the contract-type pill, and a
-best-guess `RequirementsRecordSummary`). Adds two constants files: page
-copy strings (headings, button labels) and the static mock pathway list +
-mock requirements-record. Lands a `PathwaySelectionService` (contract 3.1) — a
+with the full set of types from contract sections 1.1–1.5 (pathway shape,
+tier and vehicle unions, feature row, and a best-guess
+`RequirementsRecordSummary`). `contractType` is a free-form `string` —
+there is no `AcquisitionPathwayContractType` enum and no per-type
+colorization scheme; the card renders the label text verbatim with a
+single neutral pill style. Adds two constants files: page copy strings
+(headings, button labels) and the static mock pathway list + mock
+requirements-record. Lands a `PathwaySelectionService` (contract 3.1) — a
 non-root-scoped RxJS service with observable streams for pathways, the
 selected tier, loading state, and a derived `committed$`. Methods:
 `generate(record?)`, `selectTier(tier)`, `reset()`. The mock generation is
 intentionally synchronous-with-microtask-delay so streams are testable
 under `fakeAsync`. Service spec covers happy path, auto-select, explicit
-selection, reset, and the loading toggle. No UI yet — this phase produces
-zero visible change but everything compiles and is unit-tested. Watch out
-for: NOT marking `PathwaySelectionService` as `providedIn: 'root'` (it
-must reset on navigation) and NOT removing the `/* istanbul ignore file */`
-directive without re-checking coverage thresholds.
+selection, reset, and the loading toggle. Also strips the `icon_names`
+allow-list from `src/index.html` so the Material Symbols font loads the
+full icon set (contract 6.2) — future tickets adding icons no longer need
+to touch `index.html`. No UI yet — this phase produces zero visible
+change but everything compiles and is unit-tested. Watch out for: NOT
+marking `PathwaySelectionService` as `providedIn: 'root'` (it must reset
+on navigation) and NOT removing the `/* istanbul ignore file */` directive
+without re-checking coverage thresholds.
 
 ### Phase 2 — Pathway card presentational component
 
@@ -444,17 +479,17 @@ Adds `app-pathway-card` under `components/pathway-card/` — a small
 badge, vehicle-type pill, risk-tier pill, name + vehicle subtitle,
 contract-type row, rationale (the only `[innerHTML]` binding), feature
 list (icon + text + tone class), and footer button whose label flips from
-"Select" to "Selected". The contract-type pill text comes from the
-`AcquisitionPathwayContractType` enum value; its color variant comes from
-a small SCSS map keyed by the enum key (e.g. `FFP`, `HybridCpffFfp`) so
-adding a new enum entry without updating the SCSS lights up the typescript
-exhaustive check rather than silently default-styling. Styling lives in
+"Select" to "Selected". The contract-type pill renders `pathway().contractType`
+verbatim — it is a free-form string per the updated type contract, and
+the pill uses a single neutral status-chip style (no SCSS variant map
+keyed by enum key, no `[data-contract-type]` attribute). Styling lives in
 module-scoped SCSS that uses the existing palette tokens; tier accent
-colors are a small per-tier palette. Module declaration goes in
-`acquisition-pathways.module.ts`. Spec covers text rendering, conditional
-badge, chip text by `vehicleType`, feature tone classes, footer label,
-click emission, and `aria-pressed`. Watch out for: keeping `[innerHTML]`
-confined to the rationale and treating all other inputs as plain text.
+colors are a small per-tier palette and remain in place. Module
+declaration goes in `acquisition-pathways.module.ts`. Spec covers text
+rendering, conditional badge, chip text by `vehicleType`, feature tone
+classes, footer label, click emission, and `aria-pressed`. Watch out for:
+keeping `[innerHTML]` confined to the rationale and treating all other
+inputs as plain text.
 
 ### Phase 3 — Pathway Selection page, routing, and module wiring
 
@@ -514,17 +549,17 @@ follow-up cleanup ticket.
 
 - [ ] Replace the placeholder `AcquisitionPathway` interface with the typed
       pathway / tier / feature / vehicle / requirements-record summary
-      shapes (and the `AcquisitionPathwayContractType` enum) from contract
-      sections 1.1–1.6; add a `PathwaySelectionService` (contract 3.1) with
-      `pathways$`, `selectedTier$`, `loading$`, `committed$`, `generate`,
-      `selectTier`, and `reset`; service spec passes the seven cases in
-      step 1.5.
+      shapes from contract sections 1.1–1.5 (`contractType` is a free-form
+      `string`; no `AcquisitionPathwayContractType` enum); add a
+      `PathwaySelectionService` (contract 3.1) with `pathways$`,
+      `selectedTier$`, `loading$`, `committed$`, `generate`, `selectTier`,
+      and `reset`; service spec passes the seven cases in step 1.5. Remove
+      the `icon_names` allow-list from `src/index.html` per contract 6.2.
 - [ ] Add `app-pathway-card` (contract 4.1) under
       `components/pathway-card/` reusing `app-status-chip` and `app-button`;
-      the contract-type pill text comes from the
-      `AcquisitionPathwayContractType` enum value and the pill color comes
-      from a SCSS map keyed by the enum key; component spec passes the
-      seven cases in step 2.5.
+      the contract-type pill renders `pathway().contractType` verbatim and
+      uses a single neutral status-chip style (no per-type SCSS variant
+      map); component spec passes the seven cases in step 2.5.
 - [ ] Add `PathwaySelectionComponent` (contract 5.1) at
       `pages/pathway-selection/`, register the route at
       `/acquisition-pathways/pathway-selection`, and provide

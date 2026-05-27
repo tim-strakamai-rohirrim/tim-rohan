@@ -12,18 +12,18 @@ later ticket can wire it up without redesigning the frontend.
 
 | Contract section                                | Phase(s) | Notes                                                                                                                                |
 | ----------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| 1.1 `AcquisitionPathway` core type              | 1        | Replaces the placeholder in `acquisition-pathways.types.ts`.                                                                         |
+| 1.1 `AcquisitionPathway` core type              | 1        | Replaces the placeholder in `acquisition-pathways.types.ts`. `contractType` is a free-form `string`.                                 |
 | 1.2 `AcquisitionPathwayTier` literal union      | 1        | Three tiers — `'low' \| 'medium' \| 'high'`.                                                                                         |
 | 1.3 `AcquisitionPathwayFeature` row type        | 1        | Bullet rows on each card with optional `tone`.                                                                                       |
 | 1.4 `AcquisitionPathwayVehicleType` union       | 1        | `'existing' \| 'new'` — drives the top-of-card vehicle pill.                                                                         |
 | 1.5 `RequirementsRecordSummary` (mock input)    | 1        | Best-guess shape of what the upstream Requirements Record screen will publish; pathways generation reads from it.                    |
-| 1.6 `AcquisitionPathwayContractType` enum       | 1        | Closed set of known federal contract types; values are the human-readable labels shown on the card pill.                             |
 | 2.1 `PATHWAY_SELECTION_MOCK_PATHWAYS` constant  | 1        | Three-card mock matching the screenshot.                                                                                             |
 | 2.2 `PATHWAY_SELECTION_MOCK_RECORD` constant    | 1        | Mock requirements-record summary used as the (future) upstream input.                                                                |
 | 3.1 `PathwaySelectionService`                   | 1        | RxJS service holding pathway list + selection. Mirrors the prototype's `PathwaysService`.                                            |
-| 4.1 `app-pathway-card` component                | 2        | Dumb presentational card. Inputs: `pathway`, `selected`. Output: `select`.                                                           |
+| 4.1 `app-pathway-card` component                | 2        | Dumb presentational card. Inputs: `pathway`, `selected`. Output: `pathwaySelected`.                                                  |
 | 5.1 `app-pathway-selection` page                | 3        | Page that lists three cards and the action row. Routed at `acquisition-pathways/pathway-selection`.                                  |
 | 6.1 Routing — `pathway-selection` child route   | 3        | Adds the new screen under the existing `acquisition-pathways` lazy route without removing the legacy search-bar landing page.        |
+| 6.2 Material Symbols icon font (global)         | 1        | `src/index.html` loads the full Material Symbols Outlined set; the per-PR `icon_names` allow-list is removed.                        |
 | 7.1 Future backend endpoint (informational)     | —        | Documented but not implemented. Future ticket creates `POST /acquisition-pathways/score` in `rohan_api`.                             |
 
 ---
@@ -62,12 +62,14 @@ export interface AcquisitionPathway {
     tierIcon: string;
 
     /**
-     * Contract type pill — closed enum (see contract section 1.6). The enum
-     * value is rendered as the pill text; the enum *key* is used by the card
-     * SCSS to pick a color variant via a small `pathway-card.component.scss`
-     * map (no separate `contractTypeClass` field is needed).
+     * Contract type pill text — free-form human-readable label, e.g.
+     * 'Hybrid CPFF + FFP', 'Firm Fixed Price (FFP)'. The card renders this
+     * value verbatim using a single neutral status-chip style; there is no
+     * closed enum and no per-type SCSS color variant. Producers (mock today,
+     * backend later) own the label text. If a follow-up ticket wants
+     * per-type colorization back, it would key off the literal string.
      */
-    contractType: AcquisitionPathwayContractType;
+    contractType: string;
 
     /**
      * Body paragraph. May contain limited inline HTML (e.g. <strong>) to
@@ -89,42 +91,17 @@ export type AcquisitionPathwayTier = 'low' | 'medium' | 'high';
 export type AcquisitionPathwayVehicleType = 'existing' | 'new';
 ```
 
-### 1.6 `AcquisitionPathwayContractType` enum
-
-Closed set of known federal contract types that can show up on the pathway
-card pill. The enum **value** is the human-readable label rendered to the
-user; the enum **key** is what `pathway-card.component.scss` keys off of for
-the pill's color variant.
-
-This is intentionally a small starter set — extend it as new pathway shapes
-come up. The frontend uses an exhaustive `switch` (or a typed lookup) over
-the enum so adding a new entry without updating the SCSS map is a TypeScript
-error rather than a silent default-styled pill.
-
-```ts
-/**
- * Recognized federal contract types used on the Pathway Selection screen.
- * Add new entries when a pathway needs a contract type that isn't yet
- * represented; keep enum values aligned with the way the program office
- * writes the type (label-first, parenthetical acronym).
- */
-export enum AcquisitionPathwayContractType {
-    FFP = 'Firm Fixed Price (FFP)',
-    CPFF = 'Cost Plus Fixed Fee (CPFF)',
-    CPIF = 'Cost Plus Incentive Fee (CPIF)',
-    CPAF = 'Cost Plus Award Fee (CPAF)',
-    TM = 'Time & Materials (T&M)',
-    LOE = 'Level of Effort (LOE)',
-    HybridCpffFfp = 'Hybrid CPFF + FFP',
-}
-```
-
-> **Why an enum and not a literal-union:** the Phase 2 card SCSS needs a
-> stable, finite list of keys to drive the pill-color variants. An enum keys
-> the SCSS map by `FFP` / `CPFF` / `HybridCpffFfp` (the keys), while the UI
-> renders the enum *value* as the pill text — so the data carries the label
-> and the styling stays decoupled. A literal-union would force callers to
-> hand-author the styling key separately.
+> **Why `contractType: string` and not a closed enum:** an earlier draft
+> of this contract used `AcquisitionPathwayContractType`, a TypeScript enum
+> whose values were the human-readable labels and whose keys drove a SCSS
+> color-variant map on the card pill. That coupled the data shape to the
+> styling implementation, forced the SCSS map to stay exhaustive against
+> the enum, and made every new contract type a two-file edit. The current
+> shape is a free-form `string` with a single neutral pill style — pathway
+> producers own the label text, and adding a new contract type costs zero
+> frontend changes. If a future ticket wants per-type colorization back,
+> it can introduce the variant map keyed on the literal string (or add a
+> separate `contractTypeClass?: string` field) without touching consumers.
 
 ### 1.3 `AcquisitionPathwayFeature`
 
@@ -199,12 +176,12 @@ Lives in `src/app/pages/acquisition-pathways/constants/pathway-selection.mock.ts
 ### 2.1 `PATHWAY_SELECTION_MOCK_PATHWAYS`
 
 Matches the screenshot the user attached (CIO-SP4 / FAA eFAST / Open-Market).
-Hybrid CPFF + FFP across all three to mirror the screenshot.
+`'Hybrid CPFF + FFP'` across all three to mirror the screenshot. `contractType`
+is a free-form `string` per section 1.1 — no enum import needed.
 
 ```ts
 import {
     AcquisitionPathway,
-    AcquisitionPathwayContractType,
 } from '@pages/acquisition-pathways/types/acquisition-pathways.types';
 
 export const PATHWAY_SELECTION_MOCK_PATHWAYS: AcquisitionPathway[] = [
@@ -216,7 +193,7 @@ export const PATHWAY_SELECTION_MOCK_PATHWAYS: AcquisitionPathway[] = [
         vehicle: 'NITAAC CIO-SP4 · existing GWAC · Task Order',
         tierLabel: 'Low risk',
         tierIcon: 'shield',
-        contractType: AcquisitionPathwayContractType.HybridCpffFfp,
+        contractType: 'Hybrid CPFF + FFP',
         rationale:
             'Best fit for the FY27 ATO / radar modernization schedule because it uses an ' +
             'existing federal IT services GWAC with proceeding room for a hybrid CPFF + FFP ' +
@@ -244,7 +221,7 @@ export const PATHWAY_SELECTION_MOCK_PATHWAYS: AcquisitionPathway[] = [
         vehicle: 'FAA eFAST / GSA MAS IT · agency-tailored BPA or task-order competition',
         tierLabel: 'Medium risk',
         tierIcon: 'balance',
-        contractType: AcquisitionPathwayContractType.HybridCpffFfp,
+        contractType: 'Hybrid CPFF + FFP',
         rationale:
             'A tailored BPA or task-order competition gives FAA more control over evaluation ' +
             'factors, ordering procedures, transition requirements, and phased modernization ' +
@@ -273,7 +250,7 @@ export const PATHWAY_SELECTION_MOCK_PATHWAYS: AcquisitionPathway[] = [
         vehicle: 'FAR Part 15 · new standalone solicitation · Full-and-Open',
         tierLabel: 'High risk · flexible',
         tierIcon: 'science',
-        contractType: AcquisitionPathwayContractType.HybridCpffFfp,
+        contractType: 'Hybrid CPFF + FFP',
         rationale:
             'A standalone FAR Part 15 competition provides the most flexibility to tailor ' +
             'Section L, Section M, cost realism, data rights, cybersecurity, NAS safety, ' +
@@ -442,8 +419,8 @@ export class PathwaySelectionService {
 Lives in `src/app/pages/acquisition-pathways/components/pathway-card/`.
 
 Dumb presentational card — no service injection, no router. Its only job is to
-render an `AcquisitionPathway` and emit a `select` event when its action button
-is clicked. Internal HTML rendering uses `[innerHTML]` for the rationale string;
+render an `AcquisitionPathway` and emit a `pathwaySelected` event when its action
+button is clicked. Internal HTML rendering uses `[innerHTML]` for the rationale string;
 mock data is trusted, but the component MUST set `[innerHTML]` only on the
 `rationale` string and treat all other inputs as plain text.
 
@@ -468,10 +445,10 @@ export class PathwayCardComponent {
     readonly pathway = input.required<AcquisitionPathway>();
     readonly selected = input<boolean>(false);
 
-    readonly select = output<AcquisitionPathwayTier>();
+    readonly pathwaySelected = output<AcquisitionPathwayTier>();
 
     onSelectClick(): void {
-        this.select.emit(this.pathway().id);
+        this.pathwaySelected.emit(this.pathway().id);
     }
 }
 ```
@@ -484,7 +461,7 @@ Renders, top-to-bottom (mirrors the screenshot):
 2. **Vehicle-type pill** — `app-status-chip` with label `'EXISTING VEHICLE'` or `'NEW VEHICLE'` and icon `account_balance` / `add_circle`.
 3. **Risk-tier pill** — small pill with the tier icon (`pathway().tierIcon`) and `tierLabel` text.
 4. **Pathway name** (`<h3>`) and **vehicle** subtitle.
-5. **Contract type row** — label "Contract type" + `app-status-chip` with `contractType` (enum value) as its text. The card SCSS keys off the matching enum *key* (e.g. `FFP`, `HybridCpffFfp`) for the pill's color variant via a small map in `pathway-card.component.scss`.
+5. **Contract type row** — label "Contract type" + `app-status-chip` rendering `pathway().contractType` verbatim. The chip uses a single neutral status-chip style — no `[data-contract-type]` attribute, no per-type SCSS variant map.
 6. **Rationale paragraph** rendered with `[innerHTML]`.
 7. **Features list** — one row per `feature`; icon comes from `feature.icon`, text from `feature.text`, tone class from `feature.tone`.
 8. **Footer button** — `app-button` with `label = selected() ? 'Selected' : 'Select'` and an active-state appearance when selected.
@@ -544,7 +521,7 @@ export class PathwaySelectionComponent implements OnInit, OnDestroy { /* … */ 
 | Trigger                                  | Action                                                                                                            |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `ngOnInit`                               | Logs page view via `AppInsightsService`. Calls `pathwaySvc.generate()` if `pathways().length === 0`.              |
-| `(select)` from a card                   | `pathwaySvc.selectTier(tier)`.                                                                                    |
+| `(pathwaySelected)` from a card          | `pathwaySvc.selectTier(tier)`.                                                                                    |
 | **Re-run analysis** button click         | `pathwaySvc.reset()` then `pathwaySvc.generate()` (no API call yet — same mock).                                  |
 | **Back** button click                    | No-op for this ticket; component exposes a `back()` method that the test asserts is wired to a router navigation. |
 | **Assemble package** button click        | Same as Back — no destination yet; `next()` method exists for tests, body is a TODO with the future route.        |
@@ -600,6 +577,39 @@ export class AcquisitionPathwaysRoutingModule {}
 > in place at `''` so this ticket does not delete unrelated scaffolding. A
 > follow-up ticket can promote `pathway-selection` to the default route or
 > remove the legacy page entirely.
+
+### 6.2 Material Symbols icon font (global `index.html` change)
+
+The `src/index.html` Material Symbols `<link>` is changed from an
+allow-listed subset to the full icon set so that any `tierIcon`,
+`feature.icon`, or future Material symbol referenced by this module (or any
+other) renders without requiring an `index.html` edit per PR.
+
+**Before**:
+
+```html
+<!-- icon_names MUST be sorted alphabetically. -->
+<link
+    href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined&icon_names=account_balance,add_circle,arrow_forward,badge,balance,bolt,build,check_circle,close,contract_edit,description,draft,folder,folder_zip,image,insert_drive_file,lightbulb,note_stack,person,picture_as_pdf,receipt_long,refresh,rocket_launch,schedule,search,shield,slideshow,star,swap_vert,table_chart,upload,warning&display=block"
+    rel="stylesheet"
+/>
+```
+
+**After**:
+
+```html
+<link
+    href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined&display=block"
+    rel="stylesheet"
+/>
+```
+
+Notes:
+
+- The adjacent `<!-- icon_names MUST be sorted alphabetically. -->` comment is removed (there is no longer a list to keep sorted).
+- All other `<link>` and `<script>` tags in `index.html` are untouched.
+- Trade-off: the full font payload is larger than the allow-listed subset, but Google serves it as a streaming, browser-cached font subset and the cost is negligible against the maintenance footgun the allow-list creates (every PR adding a new icon previously needed a coordinated `index.html` edit; multiple recent PRs forgot).
+- Scope: this change lives in Phase 1 of PRCR-1646 because the new pathway-card icons (`shield`, `balance`, `rocket_launch`, `star`, `account_balance`, `add_circle`, `check_circle`, `warning`, `schedule`, `build`, `refresh`) are the immediate consumers. It is global and benefits the rest of `rohan_ui` for free.
 
 ---
 
