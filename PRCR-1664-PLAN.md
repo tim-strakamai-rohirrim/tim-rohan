@@ -34,6 +34,32 @@
 > CSS/markup-only — no behavior, data, API, or public component contract changes.
 > The acceptance criteria and file-touch matrix below predate this update; see
 > PR #2133 for the as-shipped details.
+>
+> ## Implementation update (post-review, iteration 2)
+>
+> A second round of review feedback added the following polish (PR #2133):
+>
+> - **Legend dot palette.** Field-type legend dots use a solid saturated center
+>   with a soft lighter halo (green/indigo/gold/crimson); the same palette is
+>   propagated to the status-bar legend dots.
+> - **Neutral badges/pills.** The Sources badges (USER/UPLOAD/LIBRARY/WEB) and the
+>   per-field source pills were neutralized to a **uniform gray**
+>   (`$content-background-2` background, `$secondary-text` text); the per-kind
+>   color variants and now-unused tokens were removed.
+> - **Pill font fix.** Source pills set `font-family: inherit` so `<button>` and
+>   `<span>` pills render in the app font (DM Sans) at the same weight.
+> - **Inline tag wrap.** The field value text now wraps **inline beneath its
+>   status tag** (tag + value share one inline flow instead of separate flex
+>   columns); the edit textarea drops to its own full-width line.
+> - **Sticky sidebar.** The Filters/Sources sidebar is `position: sticky` so it
+>   stays visible while the field list scrolls (reverted to static in the
+>   `<960px` single-column layout).
+> - **Wizard navigation actions (new opt-in `StepConfig` API).** Added
+>   `nextButtonIcon` / `nextButtonSymbol` / `nextButtonIconPosition` and a
+>   `secondaryButton` config. On the Requirements Record step the next button
+>   reads **"Analyze pathways"** with the `auto_graph` symbol, and a new **"Back
+>   to home"** button (`arrow-left`) navigates to `/overview`. All fields are
+>   optional and gated per-step, so other steps/wizards are unaffected.
 
 ## Problem statement
 
@@ -224,10 +250,10 @@ Single phase — no ordering or parallelism concerns.
 >
 > | File | Change |
 > |------|--------|
-> | `shared-components/wizard/wizard.component.ts` | Add optional `StepConfig.fullBleedBackground` flag |
-> | `shared-components/wizard/wizard.component.html` | Bind `main-step-panel--bleed` when the flag is set |
+> | `shared-components/wizard/wizard.component.ts` | Add optional `StepConfig.fullBleedBackground` flag; add opt-in `nextButtonIcon` / `nextButtonSymbol` / `nextButtonIconPosition` / `secondaryButton` config |
+> | `shared-components/wizard/wizard.component.html` | Bind `main-step-panel--bleed` when the flag is set; render the next-button icon and the optional `secondaryButton` |
 > | `shared-components/wizard/wizard.component.scss` | Paint `.main-step-panel--bleed` gray |
-> | `pages/acquisition-pathways/wizard/acquisition-pathways-wizard.component.ts` | Enable the flag for the Requirements Record step only |
+> | `pages/acquisition-pathways/wizard/acquisition-pathways-wizard.component.ts` | Enable the flag for the Requirements Record step only; configure the "Analyze pathways" next button + "Back to home" secondary button on that step |
 > | `styles/mat-stepper-overrides.scss` | `:has()`-scoped gray over the stepper content bottom padding |
 
 The original plan modified no other files. `requirements-record-step.component.ts`,
