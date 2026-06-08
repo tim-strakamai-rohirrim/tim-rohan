@@ -62,7 +62,12 @@ How the relevant areas work today (verified in code):
   is a shallow top-level merge (`{ ...current, ...patch }`, `ap-missions.service.ts:325`).
   The entity already documents the expected `run_state` keys, including
   **`canonicalRecord?: CrrField[]`** — the exact target for this slice
-  (`acquisition-mission.entity.ts:54-70`).
+  (`acquisition-mission.entity.ts:54-70`). **Caveat:** that `CrrField[]` is only a doc-comment;
+  the column type is the opaque `AcquisitionRunState = Record<string, unknown>`, and the
+  `CrrField`/`SourcePill` types are defined only in **rohan_ui** (`requirements-record.types.ts`).
+  So the S6 materializer must define the `CrrField`/`SourcePill` shape in rohan_api itself (the
+  documented keys: `canonicalRecord, pathways, findings, ledger, artifacts, documents,
+  selectedPathway, pathwayCommitted`).
 - **The FE contract for the record is `CrrField[]`.** The wizard owns
   `requirementsRecord = signal<CrrField[]>(INITIAL_REQUIREMENTS_RECORD_FIELDS)`
   (`acquisition-pathways-wizard.component.ts:66`) and passes it to the step as the
@@ -116,8 +121,9 @@ on SUCCESS: GET …/missions/:id/state ─▶ hydrate requirementsRecord signal 
    (it already exists as a `RunMode`). The step factory uses the ingestion subset
    (`docling_parse_base … chunk_plan`) followed by the new extraction + UI projection.
 4. **`run_state` becomes co-owned**: the server materializer writes AI-produced
-   top-level keys (`canonicalRecord`); the client continues to write user-edited keys
-   (`requirementsRecordNotes`, later `selectedPathway`, dismissals). The shallow
+   top-level keys (`canonicalRecord`); the client writes user-edited keys. Of these,
+   `selectedPathway` is already a documented `run_state` key; `requirementsRecordNotes` and
+   dismissal flags are **new additive** keys (safe — `run_state` is an opaque blob). The shallow
    top-level `mergeState` keeps these non-conflicting. In this slice the user cannot
    edit the record until extraction completes (the UI shows a drafting state), so there
    is no first-write race; subsequent user edits PATCH `canonicalRecord` per existing
@@ -139,7 +145,7 @@ on SUCCESS: GET …/missions/:id/state ─▶ hydrate requirementsRecord signal 
 |---|----------|------------------|
 | 1 | Which storage client does rohan_api use to **write** uploaded files to MinIO? `OneringArtifactService` only *reads* (via the OneRing API). | Reuse the OneRing API/MinIO write path if one exists; otherwise add a thin `AcquisitionUploadStorage` that writes to the same MinIO bucket the DAG ingests from. Confirm bucket + prefix convention with the ONERING ingestion entry before S6. |
 | 2 | Do we track the run in `or_pipeline_runs` (new `mission_id` column) or store the run handle inside `run_state.requirementsRun`? | **`or_pipeline_runs` + `mission_id`** — reuses `refreshRunStatus`, `getRun`, artifact listing, and matches the compliance precedent. `run_state` stores only a pointer (`run_state.requirementsRun = { arcRunId, status }`) for the FE convenience. |
-| 3 | Does `RunStatus.MATERIALIZING` already exist, or is it added here? | Assume **not**; add it (mirrors compliance Phase 4). Audit `refreshRunStatus` switch-case completeness. |
+| 3 | Does `RunStatus.MATERIALIZING` already exist, or is it added here? | Confirmed **absent** (current members: `QUEUED/RUNNING/SUCCESS/FAILED`); add it (mirrors compliance Phase 4). `refreshRunStatus` switches only over `AirflowDagRunState`, not `RunStatus`, so no exhaustiveness break — just add the `MATERIALIZING` case where `RunStatus` is serialized to the FE. |
 | 4 | Does `pipelines.requirements`'s aggregation reusably generalize, or do we fork a fresh `pipelines.acquisition_requirements`? | **Fork** a new pipeline package cloning the 4-phase structure + `EvidenceSpan`; new prompts + Pydantic models. Reuse `pipelines/_common/` helpers unchanged. Avoids coupling AP to RFP-response semantics. |
 | 5 | Where does the FE poll from — a new AP status endpoint or `GET /onering/runs/:id`? | **`GET /onering/runs/:id`** (already does `refreshRunStatus`). The trigger response returns the run id; the FE polls it to terminal, then refetches mission state. |
 
@@ -205,9 +211,14 @@ and writes a `CrrField[]`-shaped UI projection. Reuse the ingestion + `EvidenceS
 - [ ] **S1.1** Create `pipelines/acquisition_requirements/` cloning the structure of
   `pipelines/requirements/`. Define Pydantic models per **Contract C2**:
   `AcquisitionRequirementChunkOutput`, `AcquisitionRequirementItem` (with
-  `evidence: list[EvidenceSpan]` from `pipelines/_common/models.py`), the per-doc/master
+  `evidence: list[EvidenceSpan]` from `pipelines/_common/models.py:14`), the per-doc/master
   aggregation models, and `AcquisitionRequirementsUIProjection`. Inherit from the shared
-  `RecordModel`.
+  `RecordModel`. **Note:** the shared `EvidenceSpan` declares only
+  `doc_id/start_line/end_line/page_number` (it is `extra="allow"`, so additional keys pass).
+  C3's evidence carries `snippet` + `doc_name`, and C13 maps `e.doc_name ?? e.doc_id` → the
+  source pill label — so the `ui_projection` step (S1.5) must explicitly populate `snippet` and
+  `doc_name` on each emitted span (resolve `doc_name` from the doc manifest), since they are not
+  guaranteed by the base model.
 - [ ] **S1.2** Write `prompts.py` for the v1 buyer-side field set (Assumption 7). The
   persona is a **government acquisition analyst** extracting the *requirement record for a
   buy*, not an RFP-responder. Emit `tag ∈ {extracted, inferred, needs}` per field with a
@@ -215,8 +226,9 @@ and writes a `CrrField[]`-shaped UI projection. Reuse the ingestion + `EvidenceS
 - [ ] **S1.3** Implement the 4 phase functions in `extraction.py`/`aggregation.py`/
   `pipeline.py`/`ui_projection.py` mirroring metadata/requirements entry functions; all LLM
   calls go through `ctx.llm_controller.call_structured(output_model=…, …)`.
-- [ ] **S1.4** Implement `factories/acquisition_requirements.py:build_steps(*, cfg,
-  artifact_store) -> list[StepDef]` per **Contract C1** — ingestion subset + the new
+- [ ] **S1.4** Implement `factories/acquisition_requirements.py:build_steps() -> list[StepDef]`
+  per **Contract C1** (zero-argument signature, matching `cli.py:build_strategy_only_steps()`;
+  config is loaded globally, not passed in) — ingestion subset + the new
   pipeline + UI projection. Inject empty defaults where the extraction expects upstream
   projections it no longer gets (mirror the compliance factory note); document any
   pipeline-internal change in the PR.
@@ -255,10 +267,12 @@ verification:
 - [ ] **S2.1** Create `airflow/dags/arc_acquisition_requirements_dag.py` mirroring
   `arc_strategy_pipeline_dag.py` (which already uses `--steps-factory` via
   `bash_for_steps_factory_step()`). `dag_id="arc_acquisition_requirements"`. The Bash step
-  runs `python -m arc_agent_writer.cli run --steps-factory
-  arc_agent_writer.factories.acquisition_requirements:build_steps --run-id "$EXPECTED_RUN_ID"`,
-  with org/user exported as env (`ONERING_DEV_ORG_ID`/`ONERING_DEV_USER_ID`) and
-  `document_uris` + `mission_id` passed via conf. Tags `["arc","acquisition","extraction"]`,
+  runs (via `bash_for_steps_factory_step()`, which already templates
+  `--run-id "{{ dag_run.conf['run_id'] }}"`) `python -m arc_agent_writer.cli run --steps-factory
+  arc_agent_writer.factories.acquisition_requirements:build_steps`, with org/user exported as
+  env (`ONERING_DEV_ORG_ID`/`ONERING_DEV_USER_ID`) and `run_id` + `document_uris` + `mission_id`
+  passed via conf. **The conf key is `run_id`** (the helper reads `dag_run.conf['run_id']` and
+  errors if absent — do not name it `expected_run_id`). Tags `["arc","acquisition","extraction"]`,
   `max_active_runs=4`, retries 1 / 5 min. `dag_run.conf` per **Contract C4**.
 - [ ] **S2.2** DAG unit test mirroring `test_airflow_dag_*`: loads, task order, conf parsing,
   env export.
@@ -304,8 +318,12 @@ verification:
   (`airflow.types.ts`) per **Contract C6**.
 - [ ] **S3.4** `TriggerRequirementsExtractDto` + `RequirementsRunResponse` with
   `class-validator` + `@nestjs/swagger` per **Contract C7**.
-- [ ] **S3.5** Verify `RunType`/`OneringDagId` exhaustive-match consumers don't break
-  (especially `refreshRunStatus()`).
+- [ ] **S3.5** Grep the `onering` module for `RunType`/`RunStatus`/`OneringDagId`
+  `switch`/`if`-chains that assume the old member set. Note: `refreshRunStatus()`'s only switch
+  is `mapAirflowState()` over `AirflowDagRunState` (with a `default` fallback,
+  `onering-pipeline.service.ts:462-475`) — it does **not** switch over `RunType`/`RunStatus`, so
+  adding the new members won't break it. There is no exhaustive-match break to fix here; the
+  real work is the new SUCCESS-branch hook in S6.3.
 
 ### Phase S4 — DB: `or_pipeline_runs.mission_id` + `materialized_at` [BACKEND_DB]
 
@@ -402,6 +420,7 @@ repo: rohan_api
 base_branch: phase-S5
 depends_on: [S5]
 files:
+  - src/acquisition-pathways/types/crr-field.ts
   - src/acquisition-pathways/services/ap-requirements-projection-validator.service.ts
   - src/acquisition-pathways/services/ap-requirements-projection-validator.service.spec.ts
   - src/acquisition-pathways/services/ap-requirements-materializer.service.ts
@@ -429,17 +448,22 @@ verification:
 - [ ] **S6.1** `ApRequirementsProjectionValidatorService` (ajv@^8, `additionalProperties:
   true`, **version-strict** on `schema_version` — reject unknown versions) per **Contract
   C12**. Reads the artifact via `OneringArtifactService` and validates against the C3 schema.
-- [ ] **S6.2** `ApRequirementsMaterializerService.materialize(arcRunId)` per **Contract C13**,
+- [ ] **S6.2** Define the `CrrField`/`SourcePill` TS shape in rohan_api (it does not exist there
+  today — `run_state` is opaque `Record<string, unknown>` and the types live only in rohan_ui;
+  add a small `acquisition-pathways/types/crr-field.ts` mirroring the rohan_ui definition so the
+  materializer is typed). Then `ApRequirementsMaterializerService.materialize(arcRunId)` per **Contract C13**,
   strict **Phase A** (read + validate + cross-check `json.run_id == run.arc_run_id` and
   `json.mission_id == run.mission_id`; no DB tx) / **Phase B** (map `fields[]` → `CrrField[]`,
   PATCH `acquisition_missions.run_state` shallow-merging `canonicalRecord` + clearing the
   `requirementsRun.status` to `SUCCEEDED`, set `materialized_at`, flip run SUCCESS; single
   short tx, no network IO). Field mapping: `evidence[]` → `sources: [{ kind: 'upload', label:
   <doc filename>, docId: <doc_id> }]`; `tag` passes through (`extracted|inferred|needs`).
-- [ ] **S6.3** Extend `OneringPipelineService.refreshRunStatus()` so terminal SUCCESS for
-  `run_type === ACQUISITION_REQUIREMENTS` sets `MATERIALIZING`, invokes the materializer,
-  then commits SUCCESS (closes the race where SUCCESS is visible before `canonicalRecord`
-  exists). Update the `RunStatus`/`RunType` switch-case completeness checks.
+- [ ] **S6.3** Extend `OneringPipelineService.refreshRunStatus()` so that *after* `mapAirflowState()`
+  resolves a terminal SUCCESS, a `run_type === ACQUISITION_REQUIREMENTS` branch sets
+  `MATERIALIZING`, invokes the materializer, then commits SUCCESS (closes the race where SUCCESS
+  is visible before `canonicalRecord` exists). This is a new `run_type` branch in the
+  post-mapping path — `mapAirflowState()` itself stays a switch over `AirflowDagRunState` and is
+  unchanged. Add the `MATERIALIZING` case wherever `RunStatus` is rendered/serialized to the FE.
 - [ ] **S6.4** Add `AirflowMockService` toggle (reuse/mirror the compliance Phase 9 design):
   when `ONERING_AIRFLOW_BASE_URL` is empty + `NODE_ENV !== 'production'`, `triggerDagRun`
   writes the S1 fixture to MinIO at the artifact path and schedules a ~100 ms flip of the
@@ -489,8 +513,8 @@ verification:
   `POST …/missions/:id/requirements:extract`; `pollRun(arcRunId)` → polls
   `GET /onering/runs/:id` to terminal (10 s cadence, back off to 30 s after 5 min);
   `getState(missionId)` → `GET …/missions/:id/state`.
-- [ ] **S7.3** `ApLandingComponent.onMissionStarted()` (`ap-landing.component.ts:65`,
-  currently a TODO): `createMission` → `uploadFiles` → `triggerRequirements` → navigate to
+- [ ] **S7.3** `ApLandingComponent.onMissionStarted()` (`ap-landing.component.ts:59`; TODO
+  comment + navigate-only stub at :65): `createMission` → `uploadFiles` → `triggerRequirements` → navigate to
   `/acquisition-pathways/wizard/requirements-record` with the mission id + run id.
 - [ ] **S7.4** Wizard hydration per **Contract C16**: on load with `:id`, `getState(missionId)`.
   If `run_state.canonicalRecord` present → set `requirementsRecord.set(canonicalRecord)`.
@@ -584,8 +608,9 @@ contracts for detail.
 - **S2 — `arc_acquisition_requirements` DAG + JSON schema (ONERING).** Ships the DAG
   (mirrors `arc_strategy_pipeline_dag.py`, invokes the S1 factory via
   `bash_for_steps_factory_step()`) and freezes the v1 artifact JSON Schema. Depends on S1 (the
-  factory must exist). Passes `document_uris` + `mission_id` via `dag_run.conf` and validates
-  `expected_run_id`. Gotcha: `schema_version` is the constant `"1"` (rohan_api rejects unknown
+  factory must exist). Passes `run_id` + `document_uris` + `mission_id` via `dag_run.conf`; the
+  shipped helper reads `dag_run.conf['run_id']` (so the conf key is `run_id`, **not**
+  `expected_run_id`). Gotcha: `schema_version` is the constant `"1"` (rohan_api rejects unknown
   versions) and the S1 fixture must validate against the schema. Reuses existing LLM pools.
   Stacks on phase-S1. Implements C4 and the JSON-Schema half of C3.
 
@@ -593,8 +618,9 @@ contracts for detail.
   behavior change: `OneringDagId`/`RunType` values, `RunStatus.MATERIALIZING` (if absent),
   `AcquisitionRequirementsConf` added to the `DagRunConf` union, and the trigger DTO +
   response. Depends on nothing — this is the contract-freeze phase Streams A and C build
-  against. Gotcha: new enum values can break exhaustive `switch`-case consumers, especially
-  `refreshRunStatus()` — audit completeness. Branches off `base`. Implements C5, C6, C7.
+  against. Gotcha: grep the `onering` module for `RunType`/`RunStatus` `switch`/`if`-chains that
+  assume the old member set — but note `refreshRunStatus()` only switches over `AirflowDagRunState`
+  (with a `default`), so the new members won't break it. Branches off `base`. Implements C5, C6, C7.
 
 - **S4 — `or_pipeline_runs.mission_id` + `materialized_at` (DB/rohan_api).** Schema-first
   change so S5 writes typed columns: nullable `mission_id` + `materialized_at` + a
@@ -728,7 +754,7 @@ stacking — Stream B freezes them first and Streams A/C build against the schem
 # arc_agent_writer/factories/acquisition_requirements.py
 from arc_agent_writer.orchestrator import StepDef
 
-def build_steps(*, cfg, artifact_store) -> list[StepDef]:
+def build_steps() -> list[StepDef]:
     """Thin buyer-side requirements-extraction graph.
     ingestion subset → acquisition_requirements → ui_projection."""
     # ingestion.docling_parse_base, page_classifier, (ocr…), canonical_markdown,
@@ -738,8 +764,11 @@ def build_steps(*, cfg, artifact_store) -> list[StepDef]:
     ...
 ```
 Returns `list[StepDef]`; the CLI loads it via `--steps-factory
-arc_agent_writer.factories.acquisition_requirements:build_steps`. Factory signature is
-`(*, cfg, artifact_store)` (the shipped contract used by `arc_strategy_pipeline_dag.py`).
+arc_agent_writer.factories.acquisition_requirements:build_steps`. **Factory signature is
+zero-argument** `build_steps() -> list[StepDef]` — the shipped contract used by
+`arc_strategy_pipeline_dag.py` (cf. `cli.py:build_strategy_only_steps()`). Config is loaded
+globally by the CLI loader, *not* passed to the factory. (Earlier drafts of this doc showed
+`build_steps(*, cfg, artifact_store)`; that signature is not what the CLI invokes.)
 
 ### C2 — `pipelines.acquisition_requirements` output models (ONERING)
 
@@ -786,7 +815,9 @@ Versioning rule: any rohan_api-breaking change bumps `schema_version`.
   "org_id": "org_123",
   "user_id": "auth0|abc",
   "mission_id": 123,
-  "expected_run_id": "arc_...",          // rohan_api generates; DAG validates
+  "run_id": "arc_...",                   // rohan_api generates; the shipped
+                                         // bash_for_steps_factory_step() reads
+                                         // dag_run.conf['run_id'] → passes --run-id
   "document_uris": ["acquisition/org_123/123/uploads/AcquisitionPlan.pdf", "…"],
   "llm_mode": "gpt5_5",                  // optional
   "verbose": false                        // optional
@@ -808,7 +839,9 @@ enum RunStatus { /* …existing… */ MATERIALIZING = 'MATERIALIZING' }  // add 
 ```ts
 interface AcquisitionRequirementsConf {
   org_id: string; user_id: string; mission_id: number;
-  expected_run_id: string; document_uris: string[];
+  run_id: string;                 // conf key MUST be `run_id` — that's what the shipped
+                                  // bash_for_steps_factory_step() reads (not `expected_run_id`)
+  document_uris: string[];
   llm_mode?: string; verbose?: boolean;
 }
 // extend DagRunConf union with AcquisitionRequirementsConf
@@ -866,7 +899,11 @@ unknown). Throws `AcquisitionSchemaError` (map to 502).
 
 Phase A (no tx): read + validate; cross-check `json.run_id === run.arc_run_id` **and**
 `json.mission_id === run.mission_id` (reject `JSON_RUN_ROW_MISMATCH`). Phase B (single short
-tx): map and PATCH.
+tx): map and PATCH. **Note:** `CrrField`/`SourcePill` are not defined in rohan_api today
+(`run_state` is opaque `Record<string, unknown>`; the types live in rohan_ui). S6.2 adds the
+shape under `acquisition-pathways/types/`. The mapping below is shape-valid against the rohan_ui
+`SourcePill` (`{ kind: SourceKind; label: string; href?; docId? }`, where `'upload'` is a real
+`SourceKind`).
 
 ```ts
 // field → CrrField
