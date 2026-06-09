@@ -21,7 +21,7 @@ not a planned refactor (companion Non-goals/Future work).
 **Do Stage 0 first (engine-agnostic, no AI).** Per the companion plan's **phase F0** (adopted from
 Alex's Stage 0), wire the wizard onto real `run_state` with *zero* generation — promote `run_state`
 to the typed **`AcquisitionRunState`** interface (companion **Appendix E**), `createMission`
-(map `manual→drive`), hydrate the five wizard signals, and persist on each `nextAction` — **before
+(mode passes through as `manual|auto` — the shipped contract; see S7.1), hydrate the five wizard signals, and persist on each `nextAction` — **before
 or in parallel with** this slice. This slice's S7 then layers extraction-driven hydration on top of
 an already-proven persistence path rather than introducing both at once.
 
@@ -61,7 +61,7 @@ How the relevant areas work today (verified in code):
 - **Custom step graphs already drive shipping DAGs.** `arc_strategy_pipeline_dag.py`
   invokes the ONERING CLI with `--steps-factory module:fn` through the
   `bash_for_steps_factory_step()` helper (`ONERING/airflow/dags/common/__init__.py:398`).
-  The compliance epic (`onering-compliance-integration-PLAN.md`) is the written
+  The compliance epic (`archive/onering-compliance-integration-PLAN.md`) is the written
   precedent for adding a *new* ONERING-powered feature via a thin step factory + a new
   DAG. We mirror it.
 - **The AP module already has its own home + persistence.** `rohan_api/src/acquisition-pathways/`
@@ -108,8 +108,8 @@ mission composer
                                         └─ OneringAirflowClientService.triggerDagRun('arc_acquisition_requirements', …conf) ─▶ DAG runs CLI
                                                                                                                   --steps-factory acquisition_requirements:build_steps
                                                                                                                   (ingestion → acquisition_requirements → ui_projection)
-                                                                                                                                              └─ writes ───▶ AGENT_RUNS/{run}/pipelines/
-                                                                                                                                                              ui_projection_acquisition_requirements.json
+                                                                                                                                              └─ writes ───▶ AGENT_RUNS/{run}/pipelines/acquisition_requirements_extraction/
+                                                                                                                                                              ui/ui_projection_acquisition_requirements.json
 poll GET /onering/runs/:id ───▶  refreshRunStatus()  (Airflow says SUCCESS)
                                    └─ set MATERIALIZING → AcquisitionRequirementsMaterializerService.materialize()
                                         ├─ read+validate artifact (OneringArtifactService) ◀───────────────────────────────────────────────── read
@@ -124,11 +124,16 @@ on SUCCESS: GET …/missions/:id/state ─▶ hydrate requirementsRecord signal 
    reused only for *run tracking* (status/progress/arc_run_id), linked by a new
    nullable `mission_id` column. We do **not** migrate AP onto `or_pipeline_runs`.
 2. **Uploaded files land in MinIO** under a mission-keyed prefix that the DAG ingests
-   via `dag_run.conf.document_uris`. rohan_api writes them through the same storage
-   client used elsewhere (see Open question 1).
-3. **ONERING's `MANUAL_UPLOAD` ingestion path** accepts a list of uploaded documents
-   (it already exists as a `RunMode`). The step factory uses the ingestion subset
-   (`docling_parse_base … chunk_plan`) followed by the new extraction + UI projection.
+   via `dag_run.conf.document_uris`. **rohan_api has no MinIO write client today** — it only
+   *reads* ONERING artifacts via the `onering_api` gateway, whose design rule is "bytes always
+   stream — MinIO never leaves the OneRing network" — so the write path is new work (see Open
+   question 1).
+3. **`RunMode.MANUAL_UPLOAD` exists** (`orchestrator.py:83`), but conf-driven document intake
+   does **not**: no `document_uris` key exists anywhere in ONERING today, and CLI ingestion
+   stages files via `--files` / the local run workspace. The S1 factory therefore adds a small
+   **document-staging step** (fetch the MinIO URIs into the run workspace) ahead of the
+   ingestion subset (`docling_parse_base … chunk_plan`), followed by the new extraction + UI
+   projection.
 4. **`run_state` becomes co-owned**: the server materializer writes AI-produced
    top-level keys (`canonicalRecord`); the client writes user-edited keys. Of these,
    `selectedPathway` is already a documented `run_state` key; `requirementsRecordNotes` and
@@ -152,9 +157,9 @@ on SUCCESS: GET …/missions/:id/state ─▶ hydrate requirementsRecord signal 
 
 | # | Question | Proposed default |
 |---|----------|------------------|
-| 1 | Which storage client does rohan_api use to **write** uploaded files to MinIO? `OneringArtifactService` only *reads* (via the OneRing API). | Reuse the OneRing API/MinIO write path if one exists; otherwise add a thin `AcquisitionUploadStorage` that writes to the same MinIO bucket the DAG ingests from. Confirm bucket + prefix convention with the ONERING ingestion entry before S6. |
+| 1 | How do uploads get **written** to MinIO? rohan_api has no MinIO write client — `OneringArtifactService` only *reads*, via the `onering_api` gateway — and ONERING's design rule is "bytes always stream — MinIO never leaves the OneRing network". | **Add an upload route to the `onering_api` gateway** (ONERING-side, cross-repo — a small standalone PR or riding the S2 branch) and call it from `ApUploadsService` via the existing OneRing API client. Giving rohan_api direct MinIO credentials would violate the gateway design; only do that with ONERING owners' sign-off. Confirm bucket + prefix convention against `docs/specs/minio_path_contract.md` before S6. |
 | 2 | Do we track the run in `or_pipeline_runs` (new `mission_id` column) or store the run handle inside `run_state.requirementsRun`? | **`or_pipeline_runs` + `mission_id`** — reuses `refreshRunStatus`, `getRun`, artifact listing, and matches the compliance precedent. `run_state` stores only a pointer (`run_state.requirementsRun = { arcRunId, status }`) for the FE convenience. |
-| 3 | Does `RunStatus.MATERIALIZING` already exist, or is it added here? | Confirmed **absent** (current members: `QUEUED/RUNNING/SUCCESS/FAILED`); add it (mirrors compliance Phase 4). `refreshRunStatus` switches only over `AirflowDagRunState`, not `RunStatus`, so no exhaustiveness break — just add the `MATERIALIZING` case where `RunStatus` is serialized to the FE. |
+| 3 | Does `RunStatus.MATERIALIZING` already exist, or is it added here? | Confirmed **absent** (current members: `QUEUED/RUNNING/SUCCESS/FAILED`, in `src/onering/enums/run-status.enum.ts` — its own file, not `run-type.enum.ts`); add it there (mirrors compliance Phase 4). `refreshRunStatus` switches only over `AirflowDagRunState`, not `RunStatus`, so no exhaustiveness break — just add the `MATERIALIZING` case where `RunStatus` is serialized to the FE. |
 | 4 | Does `pipelines.requirements`'s aggregation reusably generalize, or do we fork a fresh `pipelines.acquisition_requirements`? | **Fork** a new pipeline package cloning the 4-phase structure + `EvidenceSpan`; new prompts + Pydantic models. Reuse `pipelines/_common/` helpers unchanged. Avoids coupling AP to RFP-response semantics. |
 | 5 | Where does the FE poll from — a new AP status endpoint or `GET /onering/runs/:id`? | **`GET /onering/runs/:id`** (already does `refreshRunStatus`). The trigger response returns the run id; the FE polls it to terminal, then refetches mission state. |
 
@@ -201,6 +206,7 @@ files:
   - arc_agent_writer/tests/factories/test_acquisition_requirements_factory.py
   - arc_agent_writer/tests/fixtures/ui_projection_acquisition_requirements.sample.json
   - arc_agent_writer/CLAUDE.md
+  - docs/specs/minio_path_contract.md
 contracts:
   - "C1 acquisition_requirements:build_steps step factory"
   - "C2 pipelines.acquisition_requirements output models"
@@ -222,7 +228,9 @@ and writes a `CrrField[]`-shaped UI projection. Reuse the ingestion + `EvidenceS
   `AcquisitionRequirementChunkOutput`, `AcquisitionRequirementItem` (with
   `evidence: list[EvidenceSpan]` from `pipelines/_common/models.py:14`), the per-doc/master
   aggregation models, and `AcquisitionRequirementsUIProjection`. Inherit from the shared
-  `RecordModel`. **Note:** the shared `EvidenceSpan` declares only
+  `RecordModel` (`pipelines/_common/record_model.py:224` — a **dataclass-backed** model, *not*
+  Pydantic; `EvidenceSpan` *is* a Pydantic `BaseModel`, and existing pipelines mix the two the
+  same way). **Note:** the shared `EvidenceSpan` declares only
   `doc_id/start_line/end_line/page_number` (it is `extra="allow"`, so additional keys pass).
   C3's evidence carries `snippet` + `doc_name`, and C13 maps `e.doc_name ?? e.doc_id` → the
   source pill label — so the `ui_projection` step (S1.5) must explicitly populate `snippet` and
@@ -235,14 +243,22 @@ and writes a `CrrField[]`-shaped UI projection. Reuse the ingestion + `EvidenceS
 - [ ] **S1.3** Implement the 4 phase functions in `extraction.py`/`aggregation.py`/
   `pipeline.py`/`ui_projection.py` mirroring metadata/requirements entry functions; all LLM
   calls go through `ctx.llm_controller.call_structured(output_model=…, …)`.
-- [ ] **S1.4** Implement `factories/acquisition_requirements.py:build_steps() -> list[StepDef]`
-  per **Contract C1** (zero-argument signature, matching `cli.py:build_strategy_only_steps()`;
-  config is loaded globally, not passed in) — ingestion subset + the new
+- [ ] **S1.4** Implement `factories/acquisition_requirements.py:build_steps(*, cfg, artifact_store) -> list[StepDef]`
+  per **Contract C1** (**keyword signature** — the CLI loader *always* invokes factories as
+  `fn(cfg=cfg, artifact_store=store)`, `cli.py:19380`, with no signature adaptation; do **not**
+  copy `cli.py:build_strategy_only_steps()`, which is zero-argument and would `TypeError`
+  through this exact path) — a document-staging step (fetch `document_uris` into the run
+  workspace; **new** — no conf-driven intake exists today) + ingestion subset + the new
   pipeline + UI projection. Inject empty defaults where the extraction expects upstream
   projections it no longer gets (mirror the compliance factory note); document any
   pipeline-internal change in the PR.
-- [ ] **S1.5** UI projection writes `AGENT_RUNS/{run_id}/pipelines/ui_projection_acquisition_requirements/ui_projection_acquisition_requirements.json`
+- [ ] **S1.5** UI projection writes `pipelines/acquisition_requirements_extraction/ui/ui_projection_acquisition_requirements.json`
+  under the run root — mirroring the shipped convention
+  (`REQUIREMENTS_UI_RELPATH = "pipelines/requirements_extraction/ui/ui_projection_requirements.json"`) —
   matching **Contract C3** (incl. `schema_version: "1"`, `run_id`, `mission_id`, `fields[]`).
+  Update `docs/specs/minio_path_contract.md` in the same PR (repo rule for bucket-layout
+  changes). Read-side consumers derive the runs prefix via
+  `onering_shared.storage.paths.runs_prefix_for(store)` — never hard-code `AGENT_RUNS/`.
 - [ ] **S1.6** Add the sample fixture (referenced by S8's dev mock and S-CI cross-check) and
   the factory unit test (step ordering/count, no metadata/structure/evaluation steps).
 - [ ] **S1.7** Note the factory + invocation in `arc_agent_writer/CLAUDE.md`.
@@ -279,15 +295,18 @@ verification:
   runs (via `bash_for_steps_factory_step()`, which already templates
   `--run-id "{{ dag_run.conf['run_id'] }}"`) `python -m arc_agent_writer.cli run --steps-factory
   arc_agent_writer.factories.acquisition_requirements:build_steps`, with org/user exported as
-  env (`ONERING_DEV_ORG_ID`/`ONERING_DEV_USER_ID`) and `run_id` + `document_uris` + `mission_id`
-  passed via conf. **The conf key is `run_id`** (the helper reads `dag_run.conf['run_id']` and
-  errors if absent — do not name it `expected_run_id`). Tags `["arc","acquisition","extraction"]`,
+  env (`ONERING_DEV_ORG_ID`/`ONERING_DEV_USER_ID`). **The conf key is `run_id`** (the helper
+  reads `dag_run.conf['run_id']` and errors if absent — do not name it `expected_run_id`).
+  **The shipped helper templates only `run_id`** — forwarding `document_uris` + `mission_id`
+  from conf to the CLI/factory is *new templating this DAG adds* (extend the bash command or
+  export them as env, mirroring how org/user are exported). Tags `["arc","acquisition","extraction"]`,
   `max_active_runs=4`, retries 1 / 5 min. `dag_run.conf` per **Contract C4**.
 - [ ] **S2.2** DAG unit test mirroring `test_airflow_dag_*`: loads, task order, conf parsing,
   env export.
 - [ ] **S2.3** `specs/ui_projection_acquisition_requirements.schema.json` per **Contract C3**,
   with `schema_version: "1"` constant (rohan_api rejects unknown versions). Validate the S1
-  fixture against it.
+  fixture against it. (`specs/` holds only markdown today — this is the first `*.schema.json`
+  there; a new but deliberate convention.)
 - [ ] **S2.4** Document DAG + conf in `airflow/CLAUDE.md`. Reuse existing LLM pools (no new
   pool needed for a single thin extraction graph; revisit only if profiling shows
   saturation).
@@ -304,6 +323,7 @@ depends_on: []
 files:
   - src/onering/types/airflow.types.ts
   - src/onering/enums/run-type.enum.ts
+  - src/onering/enums/run-status.enum.ts
   - src/acquisition-pathways/dto/runs/extract-requirements.dto.ts
   - src/acquisition-pathways/dto/runs/index.ts
 contracts:
@@ -322,7 +342,8 @@ verification:
 - [ ] **S3.1** `OneringDagId.ACQUISITION_REQUIREMENTS = 'arc_acquisition_requirements'`
   (`airflow.types.ts`).
 - [ ] **S3.2** `RunType.ACQUISITION_REQUIREMENTS = 'ACQUISITION_REQUIREMENTS'`
-  (`run-type.enum.ts`). Add `RunStatus.MATERIALIZING = 'MATERIALIZING'` if absent (Open Q3).
+  (`run-type.enum.ts`). Add `RunStatus.MATERIALIZING = 'MATERIALIZING'` in
+  **`run-status.enum.ts`** (its own file; confirmed absent today — Open Q3).
 - [ ] **S3.3** `AcquisitionRequirementsConf` interface + extend the `DagRunConf` union
   (`airflow.types.ts`) per **Contract C6**.
 - [ ] **S3.4** `TriggerRequirementsExtractDto` + `RequirementsRunResponse` with
@@ -382,6 +403,7 @@ files:
   - src/acquisition-pathways/services/ap-missions.service.ts
   - src/acquisition-pathways/services/ap-uploads.service.ts
   - src/acquisition-pathways/services/ap-uploads.service.spec.ts
+  - src/acquisition-pathways/entities/acquisition-mission.entity.ts
   - src/onering/services/onering-pipeline.service.ts
   - src/onering/services/onering-pipeline.service.spec.ts
   - src/acquisition-pathways/acquisition-pathways.module.ts
@@ -399,9 +421,12 @@ verification:
 
 **Steps**:
 
-- [ ] **S5.1** Implement `ApUploadsService` that stores multipart files to MinIO at
-  `acquisition/{org_id}/{mission_id}/uploads/{filename}` (Open Q1) and updates
-  `acquisition_missions.attached_files`. Returns `[{ name, size, mime, uri }]`.
+- [ ] **S5.1** Implement `ApUploadsService` that stores multipart files at
+  `acquisition/{org_id}/{mission_id}/uploads/{filename}` via the Open-Q1 write path (expected:
+  a new `onering_api` gateway upload route — rohan_api has no MinIO write client) and updates
+  `acquisition_missions.attached_files`. Extend `AcquisitionAttachedFile` with an optional
+  `uri` (today it is `{ name, size?, mime? }`, entity `:48-52`). Returns
+  `[{ name, size, mime, uri }]`.
 - [ ] **S5.2** Add `POST /acquisition-pathways/missions/:id/files` per **Contract C9** to
   `ApMissionsController` (same `AuthGuard`/`FeatureGuard('AcquisitionPathways')`/
   `Permissions('acquisition-pathways')` guards as the existing routes), delegating to
@@ -411,13 +436,16 @@ verification:
   `INSERT or_pipeline_runs(run_type=ACQUISITION_REQUIREMENTS, mission_id, status=QUEUED)`,
   call `OneringAirflowClientService.triggerDagRun('arc_acquisition_requirements', dagRunId,
   conf)`. Mirror `launchProposal`'s error mapping (`OneringAirflowError` on transport
-  failure; row FAILED) and 409-idempotent re-handle.
+  failure; row FAILED) and its `reconcileTriggerFailure()` idempotency: on any trigger
+  failure, probe Airflow for the DAG run before failing the row. (Shipped code has **no
+  explicit 409 catch** — reconcile by state, not by status code.)
 - [ ] **S5.4** Add `POST /acquisition-pathways/missions/:id/requirements:extract` per
   **Contract C10** — resolves uploaded `documentUris` from the mission, calls the trigger,
   stores a pointer at `run_state.requirementsRun = { arcRunId, status: 'QUEUED' }` (PATCH),
   returns `RequirementsRunResponse`.
-- [ ] **S5.5** Unit tests: happy path, Airflow trigger failure, 409 idempotent re-handle,
-  ownership 404, empty-uploads guard.
+- [ ] **S5.5** Unit tests: happy path, Airflow trigger failure, trigger-failure reconcile
+  (DAG run already exists in Airflow → row not marked FAILED), ownership 404,
+  empty-uploads guard.
 
 ### Phase S6 — rohan_api: artifact validator + materializer + dev mock [BACKEND_DB]
 
@@ -499,6 +527,7 @@ files:
   - src/app/pages/acquisition-pathways/services/acquisition-run.service.spec.ts
   - src/app/pages/acquisition-pathways/components/landing/ap-landing.component.ts
   - src/app/pages/acquisition-pathways/wizard/acquisition-pathways-wizard.component.ts
+  - src/app/pages/acquisition-pathways/acquisition-pathways-routing.module.ts
   - src/app/pages/acquisition-pathways/types/acquisition-pathways.types.ts
 contracts:
   - "C9/C10/C15 FE consumption of upload/extract/state endpoints"
@@ -519,21 +548,31 @@ verification:
 
 - [ ] **S7.1** `AcquisitionPathwaysService`: replace `createMission()` (`…service.ts:25`) and
   `uploadFiles()` (`:36`) `of(MOCK…)` stubs with real `RequestService` calls per **Contracts
-  C9/C15** (`POST /acquisition-pathways/missions`, `POST …/missions/:id/files` multipart). Map the
-  UI composer's `manual→drive` so the persisted `mode ∈ {drive, auto}` (companion mode vocabulary /
-  Appendix F) — ideally this `createMission` wiring is already done in F0.
+  C9/C15** (`POST /acquisition-pathways/missions`, `POST …/missions/:id/files` multipart). Pass the
+  composer's `mode` through **unchanged** — the shipped contract is `mode ∈ {manual, auto}`
+  (`acquisition-mission.entity.ts:10`, DTO `@IsIn(ACQUISITION_MISSION_MODES)`, DB CHECK
+  constraint; `init_acquisition_pathways.sql` migrates legacy `drive→manual`). **No
+  `manual→drive` mapping** — the companion plan's Appendix F had this backwards and has been
+  corrected. Ideally this `createMission` wiring is already done in F0.
 - [ ] **S7.2** New `AcquisitionRunService`: `triggerRequirements(missionId)` →
   `POST …/missions/:id/requirements:extract`; `pollRun(arcRunId)` → polls
   `GET /onering/runs/:id` to terminal (10 s cadence, back off to 30 s after 5 min);
   `getState(missionId)` → `GET …/missions/:id/state`.
 - [ ] **S7.3** `ApLandingComponent.onMissionStarted()` (`ap-landing.component.ts:59`; TODO
   comment + navigate-only stub at :65): `createMission` → `uploadFiles` → `triggerRequirements` → navigate to
-  `/acquisition-pathways/wizard/requirements-record` with the mission id + run id.
-- [ ] **S7.4** Wizard hydration per **Contract C16**: on load with `:id`, `getState(missionId)`.
+  `/acquisition-pathways/wizard/{missionId}/requirements-record`. **Add a
+  `wizard/:missionId/:step` route** in `acquisition-pathways-routing.module.ts` — today the
+  wizard route is `wizard/:step` only (no mission id; the only `:id` route is `mission/:id`
+  on the workspace component). Keep the id-less `wizard/:step` route as the `?demo=1` seed
+  mode.
+- [ ] **S7.4** Wizard hydration per **Contract C16**: on load with `:missionId`, `getState(missionId)`.
   If `run_state.canonicalRecord` present → set `requirementsRecord.set(canonicalRecord)`.
-  Else, if a `requirementsRun` is in flight → show the existing drafting/extracting state and
-  `pollRun`; on SUCCESS, refetch state and hydrate. Fall back to the seed only in a dedicated
-  `?demo=1` mode (keep the mock importable for design/dev).
+  Else, if a `requirementsRun` is in flight → show a drafting/extracting state and `pollRun`;
+  on SUCCESS, refetch state and hydrate. **The drafting state is new UI for this step** — the
+  requirements-record step has no loading state today; the only existing drafting affordance
+  is `package-assembly-step`'s `CardState`/`loading` pattern, so mirror that rather than
+  inventing a new one. Fall back to the seed only in a dedicated `?demo=1` mode (keep the
+  mock importable for design/dev).
 - [ ] **S7.5** Persist user edits: when the user edits/adds/removes a field, PATCH
   `run_state.canonicalRecord` (debounced) so reload is stable. (`RequirementsRecordStepComponent`
   already mutates the `record` signal; add the persistence side-effect in the wizard.)
@@ -613,22 +652,27 @@ contracts for detail.
   ingestion-subset → extraction → UI projection, emitting a `CrrField[]`-shaped
   `ui_projection_acquisition_requirements.json` with `EvidenceSpan` provenance. Depends on
   nothing. Net-new domain content lives only in `models.py`/`prompts.py`; everything else
-  reuses `pipelines/_common/` helpers and builtin ingestion StepDefs. Gotchas: inject empty
-  defaults where extraction expects upstream projections it no longer receives (mirror the
-  compliance factory); never emit `tag='user'`. Ships a sample fixture consumed downstream by
-  S6's dev mock and S8's cross-check. Implements C1, C2, C3.
+  reuses `pipelines/_common/` helpers and builtin ingestion StepDefs. Gotchas: the factory
+  signature is `build_steps(*, cfg, artifact_store)` — the CLI loader always passes both
+  kwargs (`cli.py:19380`; the zero-arg `build_strategy_only_steps()` is a shipped bug, not a
+  precedent); document staging from `document_uris` is a new step (no conf-driven intake
+  exists today); inject empty defaults where extraction expects upstream projections it no
+  longer receives (mirror the compliance factory); never emit `tag='user'`. Ships a sample
+  fixture consumed downstream by S6's dev mock and S8's cross-check. Implements C1, C2, C3.
 
 - **S2 — `arc_acquisition_requirements` DAG + JSON schema (ONERING).** Ships the DAG
   (mirrors `arc_strategy_pipeline_dag.py`, invokes the S1 factory via
   `bash_for_steps_factory_step()`) and freezes the v1 artifact JSON Schema. Depends on S1 (the
   factory must exist). Passes `run_id` + `document_uris` + `mission_id` via `dag_run.conf`; the
-  shipped helper reads `dag_run.conf['run_id']` (so the conf key is `run_id`, **not**
-  `expected_run_id`). Gotcha: `schema_version` is the constant `"1"` (rohan_api rejects unknown
+  shipped helper templates **only** `run_id` (conf key `run_id`, **not** `expected_run_id`) —
+  forwarding `document_uris`/`mission_id` to the CLI is new DAG-side templating. Gotcha:
+  `schema_version` is the constant `"1"` (rohan_api rejects unknown
   versions) and the S1 fixture must validate against the schema. Reuses existing LLM pools.
   Stacks on phase-S1. Implements C4 and the JSON-Schema half of C3.
 
 - **S3 — Enums, conf type, DTOs (rohan_api).** Lands all rohan_api type surface area with zero
-  behavior change: `OneringDagId`/`RunType` values, `RunStatus.MATERIALIZING` (if absent),
+  behavior change: `OneringDagId`/`RunType` values, `RunStatus.MATERIALIZING` (confirmed
+  absent; lives in its own `run-status.enum.ts`),
   `AcquisitionRequirementsConf` added to the `DagRunConf` union, and the trigger DTO +
   response. Depends on nothing — this is the contract-freeze phase Streams A and C build
   against. Gotcha: grep the `onering` module for `RunType`/`RunStatus` `switch`/`if`-chains that
@@ -647,9 +691,11 @@ contracts for detail.
   `ApUploadsService` stores multipart uploads to MinIO and updates `attached_files`; the
   `…/files` and `…/requirements:extract` endpoints reuse existing AP guards + ownership check;
   `triggerAcquisitionRequirements()` inserts the `or_pipeline_runs` row and fires the DAG.
-  Depends on S4 (typed columns). Gotchas: confirm the MinIO write client (Open Q1) before
-  coding; mirror `launchProposal`'s error mapping + Airflow-409 idempotent re-handle; guard
-  empty uploads. Stacks on phase-S4. Implements C9, C10, C11.
+  Depends on S4 (typed columns). Gotchas: resolve the Open-Q1 write path before coding
+  (expected: new `onering_api` gateway upload route — rohan_api has no MinIO write client);
+  extend `AcquisitionAttachedFile` with optional `uri`; mirror `launchProposal`'s error
+  mapping + `reconcileTriggerFailure()` idempotency probe (no explicit 409 catch exists);
+  guard empty uploads. Stacks on phase-S4. Implements C9, C10, C11.
 
 - **S6 — Artifact validator + materializer + dev mock (rohan_api).** The materializer half: on
   terminal SUCCESS for an `ACQUISITION_REQUIREMENTS` run, `refreshRunStatus()` sets
@@ -665,7 +711,10 @@ contracts for detail.
   new `AcquisitionRunService` (trigger + poll `GET /onering/runs/:id` + getState), landing
   wiring, and wizard hydration of `requirementsRecord` from `run_state.canonicalRecord` with a
   drafting/polling state. Logically depends on S3+S5 contracts being frozen but branches off
-  `main` — code against the contracts/PR diffs, not a running backend. Gotchas: keep the seed
+  `main` — code against the contracts/PR diffs, not a running backend. Gotchas: the wizard
+  route is `wizard/:step` today — add `wizard/:missionId/:step`; the drafting state is new UI
+  for this step (mirror `package-assembly-step`'s pattern); `mode` passes through as
+  `manual|auto` (**no** `manual→drive` mapping — that vocabulary was backwards); keep the seed
   importable behind `?demo=1`; debounce user-edit PATCHes; keep the existing step spec green.
   Implements C9/C10/C15 consumption and C16.
 
@@ -708,8 +757,8 @@ DAG, and a CI cross-check guards the shared artifact schema. Ships behind the ex
   `Database/`, synced to `scripts/sql/`), TypeORM entity columns added, `db:test:up` green.
 - [ ] **S5** `POST …/missions/:id/files` stores uploads to MinIO and updates `attached_files`;
   `POST …/missions/:id/requirements:extract` inserts the run row, triggers the DAG, and stores
-  the `run_state.requirementsRun` pointer; guards + 409-idempotency + ownership covered by
-  tests.
+  the `run_state.requirementsRun` pointer; guards + trigger-failure reconcile idempotency +
+  ownership covered by tests.
 - [ ] **S6** On terminal SUCCESS the materializer validates the artifact (version-strict),
   cross-checks `run_id`+`mission_id`, maps to `CrrField[]`, PATCHes `run_state.canonicalRecord`,
   and the in-process Airflow mock drives the full path; validator + materializer + mock tests
@@ -747,7 +796,7 @@ stacking — Stream B freezes them first and Streams A/C build against the schem
 | C2 `pipelines.acquisition_requirements` output models | S1 | Pydantic models + `EvidenceSpan` |
 | C3 `ui_projection_acquisition_requirements.json` v1 | S1, S2 | S1 writes the artifact; S2 freezes the JSON Schema |
 | C4 `arc_acquisition_requirements` DAG `dag_run.conf` envelope | S2 | DAG conf contract |
-| C5 Enum extensions (`OneringDagId`/`RunType`/`RunStatus`) | S3 | `MATERIALIZING` added if absent |
+| C5 Enum extensions (`OneringDagId`/`RunType`/`RunStatus`) | S3 | `MATERIALIZING` added in `run-status.enum.ts` (confirmed absent today) |
 | C6 `AcquisitionRequirementsConf` | S3 | Extends `DagRunConf` union |
 | C7 Trigger DTO + `RequirementsRunResponse` | S3 | `class-validator` + swagger |
 | C8 `or_pipeline_runs` additions (`mission_id`, `materialized_at`) | S4 | DB + entity + index |
@@ -767,9 +816,10 @@ stacking — Stream B freezes them first and Streams A/C build against the schem
 # arc_agent_writer/factories/acquisition_requirements.py
 from arc_agent_writer.orchestrator import StepDef
 
-def build_steps() -> list[StepDef]:
+def build_steps(*, cfg, artifact_store) -> list[StepDef]:
     """Thin buyer-side requirements-extraction graph.
-    ingestion subset → acquisition_requirements → ui_projection."""
+    stage documents → ingestion subset → acquisition_requirements → ui_projection."""
+    # step "stage_documents" (fetch dag_run document_uris into the run workspace — NEW)
     # ingestion.docling_parse_base, page_classifier, (ocr…), canonical_markdown,
     # line_numbering, line_map, chunk_plan  (reuse builtin ingestion StepDefs)
     # → step "pipelines.acquisition_requirements"
@@ -778,10 +828,12 @@ def build_steps() -> list[StepDef]:
 ```
 Returns `list[StepDef]`; the CLI loads it via `--steps-factory
 arc_agent_writer.factories.acquisition_requirements:build_steps`. **Factory signature is
-zero-argument** `build_steps() -> list[StepDef]` — the shipped contract used by
-`arc_strategy_pipeline_dag.py` (cf. `cli.py:build_strategy_only_steps()`). Config is loaded
-globally by the CLI loader, *not* passed to the factory. (Earlier drafts of this doc showed
-`build_steps(*, cfg, artifact_store)`; that signature is not what the CLI invokes.)
+keyword** `build_steps(*, cfg, artifact_store) -> list[StepDef]` — the CLI loader *always*
+invokes factories as `fn(cfg=cfg, artifact_store=store)` (`cli.py:19380`; `_resolve_callable`
+does no signature adaptation). **Do not mirror `cli.py:build_strategy_only_steps()`** — it is
+zero-argument and would raise `TypeError` through this exact path; that is a shipped bug
+(flagged separately), not a contract. (An earlier revision of this doc "corrected" the
+signature to zero-argument based on that factory; the correction was backwards.)
 
 ### C2 — `pipelines.acquisition_requirements` output models (ONERING)
 
@@ -818,7 +870,11 @@ class AcquisitionRequirementItem(RecordModel):
   ]
 }
 ```
-Path: `AGENT_RUNS/{run_id}/pipelines/ui_projection_acquisition_requirements/ui_projection_acquisition_requirements.json`.
+Path: `pipelines/acquisition_requirements_extraction/ui/ui_projection_acquisition_requirements.json`
+under the run root — mirrors the shipped `REQUIREMENTS_UI_RELPATH` convention. The writer's
+local prefix is `AGENT_RUNS/{run_id}/`, but read-side consumers must derive the runs prefix via
+`onering_shared.storage.paths.runs_prefix_for(store)` — never hard-code it. Update
+`docs/specs/minio_path_contract.md` in the same PR (repo rule for bucket-layout changes).
 Versioning rule: any rohan_api-breaking change bumps `schema_version`.
 
 ### C4 — `arc_acquisition_requirements` DAG `dag_run.conf` envelope
@@ -844,7 +900,8 @@ Versioning rule: any rohan_api-breaking change bumps `schema_version`.
 enum OneringDagId { /* …existing… */ ACQUISITION_REQUIREMENTS = 'arc_acquisition_requirements' }
 // src/onering/enums/run-type.enum.ts
 enum RunType { /* …existing… */ ACQUISITION_REQUIREMENTS = 'ACQUISITION_REQUIREMENTS' }
-enum RunStatus { /* …existing… */ MATERIALIZING = 'MATERIALIZING' }  // add if absent
+// src/onering/enums/run-status.enum.ts  (separate file; current members QUEUED/RUNNING/SUCCESS/FAILED)
+enum RunStatus { /* …existing… */ MATERIALIZING = 'MATERIALIZING' }  // confirmed absent today
 ```
 
 ### C6 — `AcquisitionRequirementsConf` (rohan_api)
@@ -878,10 +935,12 @@ CREATE INDEX IF NOT EXISTS idx_or_runs_org_mission_started
 
 ### C9 — `POST /acquisition-pathways/missions/:id/files`
 
-Multipart upload. Guards: `AuthGuard('jwt')`, `FeatureGuard('AcquisitionPathways')`,
-`PermissionsGuard('acquisition-pathways')`, mission-ownership check. Stores to
-`acquisition/{org_id}/{mission_id}/uploads/{filename}`; updates `attached_files`. Returns
-`{ files: [{ name, size, mime, uri }] }`.
+Multipart upload. Guards (same as existing AP routes, `ap-missions.controller.ts:59-61`):
+`@UseGuards(AuthGuard('jwt'), FeatureGuard, PermissionsGuard)` + `@Features('AcquisitionPathways')`
++ `@Permissions('acquisition-pathways')`, plus mission-ownership check. Stores to
+`acquisition/{org_id}/{mission_id}/uploads/{filename}` via the Open-Q1 write path; updates
+`attached_files` (extend `AcquisitionAttachedFile` with optional `uri` — today it is
+`{ name, size?, mime? }`). Returns `{ files: [{ name, size, mime, uri }] }`.
 
 ### C10 — `POST /acquisition-pathways/missions/:id/requirements:extract`
 
@@ -899,7 +958,9 @@ triggerAcquisitionRequirements(
 ```
 Resolves org, generates `arc_run_id`, `INSERT or_pipeline_runs(run_type=ACQUISITION_REQUIREMENTS,
 mission_id, status=QUEUED, …)`, `OneringAirflowClientService.triggerDagRun('arc_acquisition_requirements',
-dagRunId, conf)`. Idempotent on Airflow 409 (`getDagRun` re-handle). Error mapping mirrors
+dagRunId, conf)`. Idempotency mirrors `launchProposal`'s `reconcileTriggerFailure()`: on any
+trigger failure, probe Airflow for the DAG run before failing the row (shipped code has no
+explicit 409 catch — reconcile by state, not status code). Error mapping mirrors
 `launchProposal`.
 
 ### C12 — Artifact validator
@@ -948,10 +1009,11 @@ a ~100 ms status flip to SUCCESS. Polling path downstream is identical to prod.
 
 ### C16 — `run_state` hydration contract (FE)
 
-On wizard load with `:id`: `GET …/missions/:id/state`. If `run_state.canonicalRecord` present
-→ `requirementsRecord.set(canonicalRecord)`. Else if `run_state.requirementsRun.status` is
-non-terminal → show drafting state + poll `GET /onering/runs/:arcRunId`; on SUCCESS refetch
-state. User edits debounce-PATCH `run_state.canonicalRecord`.
+On wizard load with `:missionId` (via the **new** `wizard/:missionId/:step` route — today the
+wizard route is `wizard/:step` only): `GET …/missions/:id/state`. If `run_state.canonicalRecord`
+present → `requirementsRecord.set(canonicalRecord)`. Else if `run_state.requirementsRun.status`
+is non-terminal → show the (new) drafting state + poll `GET /onering/runs/:arcRunId`; on SUCCESS
+refetch state. User edits debounce-PATCH `run_state.canonicalRecord`.
 
 ### C17 — Schema cross-check CI
 

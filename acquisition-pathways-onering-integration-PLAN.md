@@ -11,7 +11,8 @@
 **Bridge decision (RESOLVED — team-agreed 2026-06-09):** all AP generation runs on the
 **shipped Airflow `/onering/*` integration path** in rohan_api — for the **entire flow**:
 all five wizard stages *plus* agentic chat and Auto-Run. This supersedes the alternative in
-Alex's *Acquisition Pathways Production Design Doc* (`ua-acquisition-pathways` PR #10), which
+Alex's *Acquisition Pathways Production Design Doc* (`UA-Acquisition-Pathways` PR #10 —
+actual PR title "Ap design initial", still open), which
 locked **in-process answer-engine-v2 (sync/SSE)** generation with ONERING deferred to a late
 "heavy path" stage. After comparing both (see *Decision record*), we chose **ONERING for
 everything**: the high-value stages — Package Assembly's DOCX/PPTX/XLSX rendering and
@@ -53,7 +54,8 @@ by inspecting ONERING:
 > templates, reference data, rules) is net-new.**
 
 ONERING generates **zero** government-side documents and has **no** contract-vehicle
-reference data — those are genuinely new. But its orchestrator, ingestion, render engine,
+reference dataset — vehicle names appear only as extraction vocabulary (the
+`contract_vehicle` metadata field), not as scoring reference data; those are genuinely new. But its orchestrator, ingestion, render engine,
 LLM controller, evidence/provenance model, scoring pattern, and compliance-finding engine
 are all directly reusable, and its product integration (Airflow `/onering/*`) is shipped.
 
@@ -66,7 +68,7 @@ Verified in code (not just planned):
 - `rohan_api/src/onering/` exists and is live: `OneringPipelineService`
   (`launchProposal`/`stageOpportunity`/`triggerDiscovery`/`listRuns`/`getRun`/
   `refreshRunStatus`), `OneringAirflowClientService` (Airflow REST v2 + token auth),
-  `OneringArtifactService` (MinIO artifact reads), `or_pipeline_runs` table,
+  `OneringArtifactService` (artifact list/stream proxied through `OneringApiClient`, not direct MinIO reads), `or_pipeline_runs` table,
   `OneringDagId`/`RunType`/`RunStatus` enums, `OneringRunsController` +
   `OneringOpportunitiesController`.
 - `ONERING/airflow/dags/` ships `arc_launch_proposal_dag.py`, `arc_stage_opportunity_dag.py`,
@@ -94,7 +96,7 @@ Three topologies, compared:
 | **Requirements Record** | ingestion (Docling→markdown→chunk), 4-phase extraction pattern, `EvidenceSpan` provenance | buyer-side extraction models + prompts; `CrrField[]` UI projection | **Low–Med** (this is the slice) |
 | **Pathway Selection** | two-layer scoring pattern (`opportunities/scoring.py` deterministic + `opp_matcher.py` LLM), `ScoreComponent`/`OpportunityScore`, `disqualifier_reasons` | **contract-vehicle reference data** (GSA MAS, CIO-SP4, GWAC, IDIQ, BPA, open-market — ceilings, scope, set-asides, protest history), scoring rules, prompts → `AcquisitionPathway[]` | **High** (most novel domain data; *also* the best fast-lane candidate later) |
 | **Package Assembly** | section-writer orchestration (draft→critique→revise→summarize), `consistency_ledger`, `source_packet_builder`, render engine (DOCX/PPTX/XLSX), `volume_assembler`, `template_fill_arbiter` | **government document templates** (Acq Plan, MRR, SOW/PWS/SOO, RFI/RFP…), buyer-side writer prompts, acquisition context builder → `Artifact[]`/`AssemblyCard[]` | **High** (biggest content lift) |
-| **Integrity Check** | `review/compliance_check.py` MAPPER engine: three-pass, finding kinds/severities, corrective actions | FAR/DFARS/policy/protest rule set + cross-document consistency rules → `FindingGroup[]` | **Med–High** (engine reuses; rules new) |
+| **Integrity Check** | `review/compliance_check.py` three-pass engine (deterministic checks → LLM judgment → LLM corrective actions), finding kinds/severities — distinct from the separate MAPPER review pipeline | FAR/DFARS/policy/protest rule set + cross-document consistency rules → `FindingGroup[]` | **Med–High** (engine reuses; rules new) |
 | **Finalize Package** | `volume_assembler` + renderers + MinIO | bundling/download endpoints | **Low** |
 | **Chat** (cross-cutting) | RAG baseline **already shipped** via Answer Engine V2 (`ap-chat.controller.ts`); ONERING `mcp_server` + `OneringMcpService` + ReAct agent for the agentic layer | **agentic control plane** (run_state read/mutate + generation-trigger MCP tools), Watcher endpoint, AP-tuned prompt branch — see **Workstream X** | **Med** (baseline done; agentic layer net-new) |
 
@@ -114,14 +116,15 @@ and PATCHes a top-level key into `acquisition_missions.run_state`:
 
 `run_state` becomes **co-owned**: the server writes AI-produced keys; the client writes
 user-edited keys (`requirementsRecordNotes`, `selectedPathway` selection, dismissals). The
-shallow top-level `mergeState` (`ap-missions.service.ts:325`) keeps them non-conflicting.
+shallow top-level `mergeState` (rohan_api `ap-missions.service.ts:319`) keeps them non-conflicting.
 
 ## Assumptions
 
 1. `acquisition_missions` remains the AP source of truth; `or_pipeline_runs` is reused only
    for run tracking, linked by a new nullable `mission_id`.
 2. Uploaded mission documents land in MinIO under a mission-keyed prefix the DAGs ingest via
-   `dag_run.conf.document_uris` (ONERING `MANUAL_UPLOAD` ingestion).
+   a net-new `dag_run.conf.document_uris` key (defined by the slice doc, not an existing
+   ONERING mechanism; it feeds ONERING's existing `MANUAL_UPLOAD` ingestion).
 3. Each step is independently triggerable and resumable; a mission can re-run any step.
 4. The `AcquisitionPathways` feature flag + `acquisition-pathways` permission already gate
    the module; new endpoints reuse them.
@@ -177,15 +180,18 @@ depends_on: []
 ```
 
 - **F0 [rohan_ui + rohan_api] — Contract + thin persistence (no AI). _Do this first;
-  engine-agnostic._** Promote `run_state` from `Record<string, unknown>` to the exported
-  **`AcquisitionRunState`** interface (Appendix E), shared by rohan_ui and mirrored in rohan_api
-  with optional shape validation. Wire the wizard onto real state with **zero generation**:
-  landing → `createMission` (map UI `manual→drive`; persisted `mode ∈ {drive,auto}`) → navigate
+  engine-agnostic._** Tighten rohan_api's existing
+  `AcquisitionRunState = Record<string, unknown>` alias (`acquisition-mission.entity.ts:72`) to
+  the exported **`AcquisitionRunState`** interface (Appendix E) and add the same interface
+  net-new to rohan_ui (which has no run_state type today), with optional shape validation. Wire the wizard onto real state with **zero generation**:
+  landing → `createMission` (persisted `mode ∈ {manual,auto}`, matching the UI composer) → navigate
   by `mission_id`; build out `ApMissionWorkspaceComponent` as the wizard+chat host; hydrate the
   five wizard signals from `GET …/missions/:id/state`; persist on each `nextAction` via
   `PATCH …/state` (replace every `of(undefined)`); handle `pathwayCommitted` vs auto-commit and
   `AssemblyCard` vs durable `Artifact` (hydrate terminal card states so animation is suppressed).
-  Coordinate with in-flight UI PRs **#2110/#2112** to avoid type churn. **Acceptance:** create a
+  UI PRs **#2110/#2112** are already merged (PRCR-1654 renamed `Mission`/`MissionMode` →
+  `AcquisitionMission`/`AcquisitionMissionMode`; PRCR-1655 missions-table refactor) — build on
+  the post-merge type names. **Acceptance:** create a
   mission, fill steps, reload — state persists; cross-user 404s hold; no mock is read for state.
   *(Adopted from Alex's Stage 0 — it de-risks the FE rails before any engine work and is the same
   regardless of how generation runs. It precedes and feeds F5's hydration-of-generated-output.)*
@@ -194,7 +200,8 @@ depends_on: []
 - **F2 [rohan_api]** Per-step enum scaffolding convention (`OneringDagId.ACQUISITION_*`,
   `RunType.ACQUISITION_*`, `RunStatus.MATERIALIZING`) + `DagRunConf` union extension. *(slice S3 establishes the pattern.)*
 - **F3 [rohan_api]** Upload→MinIO endpoint + `ApUploadsService`. *(= slice S5 upload half.)*
-- **F4 [rohan_api]** Generic materializer harness: validator base (ajv, version-strict),
+- **F4 [rohan_api]** Generic materializer harness: validator base (ajv, version-strict — ajv is a
+  net-new dependency; class-validator is the incumbent, confirm before adding),
   Phase-A/Phase-B transaction discipline, `refreshRunStatus()` `MATERIALIZING` hook,
   in-process Airflow dev mock. *(slice S6 is the first concrete instance; refactor shared
   bits out as the second step lands.)*
@@ -210,9 +217,9 @@ depends_on: []
 |---|---|---|---|---|
 | **R — Requirements Record** *(the slice S1–S8)* | `acquisition_requirements` pipeline + DAG | trigger + materializer (`canonicalRecord`) | hydrate `requirementsRecord` | buyer-side extraction prompts/models |
 | **P — Pathway Selection** | `acquisition_pathways` scoring steps (clone `opportunities/scoring.py` + `opp_matcher.py`) + DAG | trigger + materializer (`pathways`/`selectedPathway`) | swap `PathwaySelectionService.generate()` (`:51`) to trigger+poll | **vehicle reference data** + scoring rules + prompts |
-| **K — Package Assembly** | `acquisition_package` writer steps (clone section-writer loop + render) + DAG | trigger + materializer (`artifacts`) + artifact download | swap `PackageAssemblyService.reload()` (`:12`); wire review/download | **gov document templates** + writer prompts + context builder |
+| **K — Package Assembly** | `acquisition_package` writer steps (clone section-writer loop + render) + DAG | trigger + materializer (`artifacts`) + artifact download | swap `PackageAssemblyService.reload()` (`:11`); wire review/download | **gov document templates** + writer prompts + context builder |
 | **Z — Integrity Check** | `acquisition_integrity` steps (clone `review/compliance_check.py`) + DAG | trigger + materializer (`findings`) | swap `IntegrityCheckStep` seed → state; apply/dismiss persists | **FAR/policy/protest rule set** |
-| **Finalize** | (reuse K's render output) | bundle/download endpoints | wire download handlers (`finalize-package-step` TODOs) | — |
+| **Finalize** | (reuse K's render output) | bundle/download endpoints | wire download handlers (the "not yet wired" placeholder toasts in `finalize-package-step.component.ts`) | — |
 | **X — Agentic chat + Auto-Run + Watcher** *(from Alex's Stage 4 + Auto-Run)* | `mcp_server/tools/procurement.py` (run_state read/mutate + generation-trigger tools that fire the same `arc_acquisition_*` DAGs); a chaining **Auto-Run** DAG over all stages | bind AP MCP tools (`OneringMcpService.getToolsForUser` + ReAct agent); `POST …/missions/:id/watcher`; per-tool `@Permissions()` scopes | AP-tuned chat prompt branch; Watcher gating stays client-side; Auto-Run progress via run polling | AP system-prompt port + per-tool prompts |
 
 Each per-step workstream stacks its own `phase-meta` blocks exactly like the slice's
@@ -224,13 +231,14 @@ shared, so P/K/Z are lighter on the plumbing and heavier on domain content.
 
 Three modes, ported from Alex's doc and mapped onto ONERING:
 
-- **Drive (v1, all of F0–Finalize).** Per-stage, human-in-the-loop: each wizard step triggers
+- **Drive (v1, all of F0–Finalize; persisted as `mode: 'manual'`).** Per-stage, human-in-the-loop: each wizard step triggers
   exactly one stage's DAG (`{phase}` → one `arc_acquisition_*` run), materializes, and stops for
   review/edit. The default through every per-step workstream above.
 - **Auto-Run (Workstream X).** Chains all stages unattended. ONERING-native: a single
   **`arc_acquisition_autorun` DAG** (or a parent DAG sequencing the per-stage step factories)
   runs record→pathway→artifacts→findings→ledger with checkpointing; rohan_api persists-then-
-  triggers with deterministic run-ids + in-flight short-circuit (the Growth Engine pattern),
+  triggers with deterministic run-ids + in-flight short-circuit (precedent: the in-flight
+  short-circuit in `OneringPipelineService.stageOpportunity()`),
   polls while RUNNING, and materializes each stage's `run_state` key as it completes; surfaced to
   the UI via the existing run-polling path. *(This is exactly what ONERING's Airflow already does
   for proposals — Auto-Run is markedly cheaper under "ONERING for everything" than it would have
@@ -241,17 +249,20 @@ Three modes, ported from Alex's doc and mapped onto ONERING:
   no-interrupt-during-phase, busy-drop with single-slot replay for high-severity dismissals,
   reset on new mission) stays **client-side** in rohan_ui and decides *whether* to POST.
 
-**Mode vocabulary (locked):** the API/contract is **`mode ∈ {drive, auto}`** only; map UI
-`manual→drive` at `createMission` (the UI composer says `manual|auto`; the persisted enum is
-`drive|auto`, renamed in PRCR-1650 without migrating the enum). Full stage-name drift table in
-Appendix F.
+**Mode vocabulary (corrected 2026-06-09):** the shipped persisted enum is
+**`mode ∈ {manual, auto}`** (`AcquisitionMissionMode`, `acquisition-mission.entity.ts:10`), and
+the UI composer matches — no mapping needed. A `manual→drive` rename was attempted on a feature
+branch and deliberately **reverted** (rohan_ui commit `c076e85f3`; the rename was *not*
+PRCR-1650, which was unrelated component work). Re-adopting `drive` would now require a data
+migration, so this plan keeps `manual|auto` unless the team re-decides. "Drive" remains the UX
+label for the manual mode only. Full stage-name drift table in Appendix F.
 
 **Single front door (optional, recommended).** The per-step trigger endpoints can sit behind one
 canonical **`POST …/missions/:id/generate {phase, mode}`** facade that routes `phase` to the
 right `arc_acquisition_*` DAG and returns a run handle the FE polls. This gives Alex's
 "written-once, never-forked" generation path: the **wizard buttons and the chat MCP tools call
 the same endpoint** — neither re-implements generation. Adopt it as the public surface once ≥2
-stages exist; the slice (S5/S10) may ship per-step endpoints first and converge them.
+stages exist; the slice (S5) may ship per-step endpoints first and converge them.
 
 ### Workstream X — agentic chat + MCP control plane
 
@@ -261,8 +272,10 @@ that everything runs on ONERING:
 
 - **`ONERING/mcp_server/tools/procurement.py`** exposes the prototype's run_state read/mutate tools
   and **generation triggers that fire the same `arc_acquisition_*` DAGs the wizard buttons do** —
-  one generation path, two front doors (button + chat), never forked. Register in `server.py`; add
-  to `DEFAULT_ONERING_MCP_CHAT_TOOL_ALLOWLIST` (watch the ≤120/128-tool cap).
+  one generation path, two front doors (button + chat), never forked. Register in ONERING's `server.py`; allowlist
+  in **rohan_api** — `DEFAULT_ONERING_MCP_CHAT_TOOL_ALLOWLIST` lives in rohan_api's
+  `src/utils/onering-mcp/onering-mcp.service.ts:28`, capped by `ONERING_MCP_CHAT_TOOL_LIMIT = 120`
+  (headroom under OpenAI's 128-tool limit).
 - **rohan_api** binds the AP MCP tools via `OneringMcpService.getToolsForUser` + the LangChain
   ReAct agent, adds the AP-tuned retrieval/prompt branch, and adds `POST …/missions/:id/watcher`.
 - **Per-tool RBAC** (Appendix G): generation/mutation endpoints + MCP tools carry `@Permissions()`
@@ -278,7 +291,8 @@ The 38 prototype tools' production homes are in **Appendix G**: 4 client-only (d
 
 ## Splitting the work across people
 
-The compliance epic's **four-stream parallel model** is the proven template here; AP adds a
+The compliance epic's **four-stream parallel model**
+(`archive/onering-compliance-integration-PLAN.md`) is the proven template here; AP adds a
 fifth, content-owner stream because the buyer-side domain data is the genuinely novel part.
 
 ```
@@ -381,11 +395,11 @@ slice doc.
 | Layer | Stack |
 |-------|-------|
 | Engine (ONERING) | Python 3.x, Airflow 3.x (KubernetesExecutor), Pydantic v2, Helm; reuses orchestrator, ingestion, `opportunities/scoring`, `review/compliance_check`, writer, render, LLM controller |
-| Backend (rohan_api) | NestJS, TypeScript, TypeORM, Jest, ajv; `/onering/*` (reused) + `/acquisition-pathways/*` (extended) |
+| Backend (rohan_api) | NestJS, TypeScript, TypeORM, Jest, ajv (net-new dependency); `/onering/*` (reused) + `/acquisition-pathways/*` (extended) |
 | Frontend (rohan_ui) | Angular 20+ (signals, zoneless, non-standalone module), Karma/Jasmine |
 | Storage | MinIO (`AGENT_RUNS/{arc_run_id}/…` artifacts; `acquisition/{org}/{mission}/uploads/` inputs) |
 | Run tracking | `or_pipeline_runs` (reused; new `mission_id`); `acquisition_missions.run_state` (materialization target) |
-| Auth | JWT; Airflow basic-auth token via `OneringAirflowClientService` |
+| Auth | JWT; Airflow token auth (`POST /auth/token` → Bearer) via `OneringAirflowClientService` |
 | Already shipped | AP missions CRUD + `run_state` endpoints; AP chat via Answer Engine V2; the entire `/onering/*` Airflow integration |
 
 ---
@@ -413,9 +427,10 @@ is mechanical and shared after the slice).
 
 ## Appendix E — full `AcquisitionRunState` interface (ported from Alex's design doc)
 
-The single shared contract for the opaque `run_state` blob. Promote this to rohan_ui
-`types/acquisition-pathways.types.ts` (replacing the `Record<string, unknown>` alias) and mirror
-it in rohan_api. **Every per-step materializer must write keys whose shapes deserialize 1:1 into
+The single shared contract for the opaque `run_state` blob. Add this net-new to rohan_ui
+`types/acquisition-pathways.types.ts` (the UI has no run_state type today) and tighten
+rohan_api's existing `AcquisitionRunState = Record<string, unknown>` alias
+(`acquisition-mission.entity.ts:72`) to match. **Every per-step materializer must write keys whose shapes deserialize 1:1 into
 the five wizard signals** — this is the schema the `ui_projection_*.json` artifacts and the
 materializers (F4 + each workstream's S6-equivalent) target.
 
@@ -436,7 +451,7 @@ interface AcquisitionRunState {
       docId?: string;                                // library/upload sources
     }>;
   }>;
-  recordNotes?: string;                              // user-typed; not generated
+  requirementsRecordNotes?: string;                  // user-typed; not generated (matches the wizard signal)
 
   // --- pathway → wizard.selectedPathway + PathwaySelectionService ---
   pathways?: Array<{
@@ -514,17 +529,17 @@ interface AcquisitionRunState {
 
 The four vocabularies drift; this table governs. **`generate`'s `phase` enum uses the phase
 names**; materializers write the `run_state` key; the persisted stage cursor + URL slug are
-UI-side.
+UI-side (cursor values = the UI's existing `sourceFeature` strings in the AP `constants.ts`).
 
 | Phase (generate / DAG) | `run_state` key | Persisted stage cursor | Wizard URL slug | ONERING DAG |
 |---|---|---|---|---|
-| `record` | `canonicalRecord` (+`recordNotes`) | `record` | `requirements-record` | `arc_acquisition_requirements` |
+| `record` | `canonicalRecord` (+`requirementsRecordNotes`) | `canonical-record` | `requirements-record` | `arc_acquisition_requirements` |
 | `pathway` | `pathways`, `selectedPathway`, `pathwayCommitted` | `pathways` | `pathway-selection` | `arc_acquisition_pathways` |
 | `artifacts` | `scheduledArtifacts` (+`artifacts`,`documents`) | `interview` | `package-assembly` | `arc_acquisition_package` |
 | `findings` | `findings` | `integrity` | `integrity-check` | `arc_acquisition_integrity` |
-| `ledger` | `ledger` | `export` | `finalize-package` | (Finalize; reuses K render output) |
+| `ledger` | `ledger` | `export-package` | `finalize-package` | (Finalize; reuses K render output) |
 
-Mode enum: `mode ∈ {drive, auto}` (map UI `manual→drive`).
+Mode enum: `mode ∈ {manual, auto}` (shipped `AcquisitionMissionMode`; the `drive` rename was attempted and reverted — see §"Operating modes").
 
 ## Appendix G — 38 prototype tools → production homes (ported + re-homed for ONERING)
 
