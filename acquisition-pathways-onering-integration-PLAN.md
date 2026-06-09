@@ -8,10 +8,31 @@
 > doc for concrete contracts and code; read this for the whole-feature picture, the
 > reuse-vs-build breakdown, and how to parallelize the work across people.
 
-**Bridge decision (locked):** all ONERING-heavy work runs on the **shipped Airflow
-`/onering/*` integration path** in rohan_api. A future refactor will move *fast,
-low-latency* ops (notably pathway scoring) onto a thin synchronous `rohan-python-api`
-lane — tracked under **Future work**, not built in this epic.
+**Bridge decision (RESOLVED — team-agreed 2026-06-09):** all AP generation runs on the
+**shipped Airflow `/onering/*` integration path** in rohan_api — for the **entire flow**:
+all five wizard stages *plus* agentic chat and Auto-Run. This supersedes the alternative in
+Alex's *Acquisition Pathways Production Design Doc* (`ua-acquisition-pathways` PR #10), which
+locked **in-process answer-engine-v2 (sync/SSE)** generation with ONERING deferred to a late
+"heavy path" stage. After comparing both (see *Decision record*), we chose **ONERING for
+everything**: the high-value stages — Package Assembly's DOCX/PPTX/XLSX rendering and
+Integrity's FAR/DFARS compliance engine — genuinely require ONERING machinery answer-engine-v2
+lacks, so we prove the **single** bridge once on the cheapest stage (CRR) rather than standing
+it up late on the heaviest. The helpful artifacts from Alex's doc are folded into this plan:
+the typed **`AcquisitionRunState`** interface (Appendix E), the **name-mapping** table
+(Appendix F), the **operating modes** + mode vocabulary (§"Operating modes"), the **agentic
+chat / MCP control plane + Watcher + Auto-Run** (Workstream X), the **38-tool production-home**
+map (Appendix G), **per-tool RBAC** scopes, and the engine-agnostic **no-AI "Stage 0"
+persistence foundation** (phase F0).
+
+**Decision record (2026-06-09).** Considered: **(A)** ONERING/Airflow for all stages;
+**(B)** in-process answer-engine-v2 for all stages (Alex's doc); **(C)** hybrid — light stages
+(CRR, Pathways) in-process, heavy stages (Package Assembly, Integrity) on ONERING, behind one
+`/generate {phase}` facade. **Chosen: A.** Rationale: ONERING is on the critical path for ~half
+the stages and most of the deliverable value regardless; one generation path (not two) to
+build, secure, and operate; the CRR slice de-risks that one path on the cheapest stage; uniform
+Gov/air-gap story. The hybrid's fast-lane optimization (a thin synchronous `rohan-python-api`
+lane for low-latency pathway re-scoring) is retained only as a **possible far-future
+optimization** (Non-goals/Future work), not a planned divergence.
 
 ---
 
@@ -75,7 +96,7 @@ Three topologies, compared:
 | **Package Assembly** | section-writer orchestration (draft→critique→revise→summarize), `consistency_ledger`, `source_packet_builder`, render engine (DOCX/PPTX/XLSX), `volume_assembler`, `template_fill_arbiter` | **government document templates** (Acq Plan, MRR, SOW/PWS/SOO, RFI/RFP…), buyer-side writer prompts, acquisition context builder → `Artifact[]`/`AssemblyCard[]` | **High** (biggest content lift) |
 | **Integrity Check** | `review/compliance_check.py` MAPPER engine: three-pass, finding kinds/severities, corrective actions | FAR/DFARS/policy/protest rule set + cross-document consistency rules → `FindingGroup[]` | **Med–High** (engine reuses; rules new) |
 | **Finalize Package** | `volume_assembler` + renderers + MinIO | bundling/download endpoints | **Low** |
-| **Chat** (cross-cutting) | **already shipped** via Answer Engine V2 (`ap-chat.controller.ts`) — separate RAG stack, not ONERING | — | **Done** |
+| **Chat** (cross-cutting) | RAG baseline **already shipped** via Answer Engine V2 (`ap-chat.controller.ts`); ONERING `mcp_server` + `OneringMcpService` + ReAct agent for the agentic layer | **agentic control plane** (run_state read/mutate + generation-trigger MCP tools), Watcher endpoint, AP-tuned prompt branch — see **Workstream X** | **Med** (baseline done; agentic layer net-new) |
 
 ### The materialization model (uniform across steps)
 
@@ -123,11 +144,12 @@ shallow top-level `mergeState` (`ap-missions.service.ts:325`) keeps them non-con
 
 ## Non-goals / Future work
 
-- **Hybrid fast lane (Topology C).** After the slice proves the Airflow path, add a thin
-  synchronous `rohan-python-api` endpoint (JWT via the existing RFP-Python-Server client
-  pattern) for low-latency ops — pathway re-scoring, quick field re-extraction. Migrate
-  Pathway Selection's scoring off Airflow onto it. **Filed as a follow-up refactor**, with a
-  note in each affected phase. Not built here.
+- **Hybrid fast lane (Topology C) — possible far-future optimization only.** We committed to
+  **ONERING for the entire flow** (Decision record, 2026-06-09), so the in-process / fast-lane
+  split is *not* a planned divergence and needs **no per-phase notes**. Revisit a thin synchronous
+  `rohan-python-api` endpoint (JWT via the existing RFP-Python-Server client pattern) for
+  low-latency ops (pathway re-scoring) **only if** post-launch profiling shows Airflow latency
+  measurably hurts the re-score UX. Default: leave it on ONERING.
 - **Azure Government (`.us`)** feasibility for AP DAGs (mirror the compliance epic's Gov
   spike) — separate ticket; flag AP off for Gov orgs at launch.
 - Audit-trail UI, document viewer for source pills, advanced export/packaging.
@@ -154,6 +176,19 @@ base_branch: base
 depends_on: []
 ```
 
+- **F0 [rohan_ui + rohan_api] — Contract + thin persistence (no AI). _Do this first;
+  engine-agnostic._** Promote `run_state` from `Record<string, unknown>` to the exported
+  **`AcquisitionRunState`** interface (Appendix E), shared by rohan_ui and mirrored in rohan_api
+  with optional shape validation. Wire the wizard onto real state with **zero generation**:
+  landing → `createMission` (map UI `manual→drive`; persisted `mode ∈ {drive,auto}`) → navigate
+  by `mission_id`; build out `ApMissionWorkspaceComponent` as the wizard+chat host; hydrate the
+  five wizard signals from `GET …/missions/:id/state`; persist on each `nextAction` via
+  `PATCH …/state` (replace every `of(undefined)`); handle `pathwayCommitted` vs auto-commit and
+  `AssemblyCard` vs durable `Artifact` (hydrate terminal card states so animation is suppressed).
+  Coordinate with in-flight UI PRs **#2110/#2112** to avoid type churn. **Acceptance:** create a
+  mission, fill steps, reload — state persists; cross-user 404s hold; no mock is read for state.
+  *(Adopted from Alex's Stage 0 — it de-risks the FE rails before any engine work and is the same
+  regardless of how generation runs. It precedes and feeds F5's hydration-of-generated-output.)*
 - **F1 [rohan_api/DB]** `or_pipeline_runs.mission_id` + `materialized_at` + index; entity
   columns. *(= slice S4.)*
 - **F2 [rohan_api]** Per-step enum scaffolding convention (`OneringDagId.ACQUISITION_*`,
@@ -178,11 +213,66 @@ depends_on: []
 | **K — Package Assembly** | `acquisition_package` writer steps (clone section-writer loop + render) + DAG | trigger + materializer (`artifacts`) + artifact download | swap `PackageAssemblyService.reload()` (`:12`); wire review/download | **gov document templates** + writer prompts + context builder |
 | **Z — Integrity Check** | `acquisition_integrity` steps (clone `review/compliance_check.py`) + DAG | trigger + materializer (`findings`) | swap `IntegrityCheckStep` seed → state; apply/dismiss persists | **FAR/policy/protest rule set** |
 | **Finalize** | (reuse K's render output) | bundle/download endpoints | wire download handlers (`finalize-package-step` TODOs) | — |
+| **X — Agentic chat + Auto-Run + Watcher** *(from Alex's Stage 4 + Auto-Run)* | `mcp_server/tools/procurement.py` (run_state read/mutate + generation-trigger tools that fire the same `arc_acquisition_*` DAGs); a chaining **Auto-Run** DAG over all stages | bind AP MCP tools (`OneringMcpService.getToolsForUser` + ReAct agent); `POST …/missions/:id/watcher`; per-tool `@Permissions()` scopes | AP-tuned chat prompt branch; Watcher gating stays client-side; Auto-Run progress via run polling | AP system-prompt port + per-tool prompts |
 
 Each per-step workstream stacks its own `phase-meta` blocks exactly like the slice's
 `S1`(engine pipeline) → `S2`(DAG) → `S3/S4`(enums/DB, mostly F-covered after the first) →
 `S5`(trigger) → `S6`(materializer) → `S7`(FE) → `S8`(CI). After R lands, F2/F4/F5 are
 shared, so P/K/Z are lighter on the plumbing and heavier on domain content.
+
+### Operating modes (Drive · Auto-Run · Watcher)
+
+Three modes, ported from Alex's doc and mapped onto ONERING:
+
+- **Drive (v1, all of F0–Finalize).** Per-stage, human-in-the-loop: each wizard step triggers
+  exactly one stage's DAG (`{phase}` → one `arc_acquisition_*` run), materializes, and stops for
+  review/edit. The default through every per-step workstream above.
+- **Auto-Run (Workstream X).** Chains all stages unattended. ONERING-native: a single
+  **`arc_acquisition_autorun` DAG** (or a parent DAG sequencing the per-stage step factories)
+  runs record→pathway→artifacts→findings→ledger with checkpointing; rohan_api persists-then-
+  triggers with deterministic run-ids + in-flight short-circuit (the Growth Engine pattern),
+  polls while RUNNING, and materializes each stage's `run_state` key as it completes; surfaced to
+  the UI via the existing run-polling path. *(This is exactly what ONERING's Airflow already does
+  for proposals — Auto-Run is markedly cheaper under "ONERING for everything" than it would have
+  been in-process.)*
+- **Watcher (Workstream X).** A proactive read-only assistant turn: `POST …/missions/:id/watcher`
+  (`{event, context}`) → ≤2 sentences, no mutations, ≤1 read-only tool, "empty reply is valid."
+  The **gating policy** (enabled toggle, 60s cooldown buckets, 8/session cap,
+  no-interrupt-during-phase, busy-drop with single-slot replay for high-severity dismissals,
+  reset on new mission) stays **client-side** in rohan_ui and decides *whether* to POST.
+
+**Mode vocabulary (locked):** the API/contract is **`mode ∈ {drive, auto}`** only; map UI
+`manual→drive` at `createMission` (the UI composer says `manual|auto`; the persisted enum is
+`drive|auto`, renamed in PRCR-1650 without migrating the enum). Full stage-name drift table in
+Appendix F.
+
+**Single front door (optional, recommended).** The per-step trigger endpoints can sit behind one
+canonical **`POST …/missions/:id/generate {phase, mode}`** facade that routes `phase` to the
+right `arc_acquisition_*` DAG and returns a run handle the FE polls. This gives Alex's
+"written-once, never-forked" generation path: the **wizard buttons and the chat MCP tools call
+the same endpoint** — neither re-implements generation. Adopt it as the public surface once ≥2
+stages exist; the slice (S5/S10) may ship per-step endpoints first and converge them.
+
+### Workstream X — agentic chat + MCP control plane
+
+The baseline AP chat (Answer Engine V2, `ap-chat.controller.ts`) is shipped and stays the RAG
+front door. Workstream X makes Rohan *act*, reusing ONERING's `mcp_server` — the natural home now
+that everything runs on ONERING:
+
+- **`ONERING/mcp_server/tools/procurement.py`** exposes the prototype's run_state read/mutate tools
+  and **generation triggers that fire the same `arc_acquisition_*` DAGs the wizard buttons do** —
+  one generation path, two front doors (button + chat), never forked. Register in `server.py`; add
+  to `DEFAULT_ONERING_MCP_CHAT_TOOL_ALLOWLIST` (watch the ≤120/128-tool cap).
+- **rohan_api** binds the AP MCP tools via `OneringMcpService.getToolsForUser` + the LangChain
+  ReAct agent, adds the AP-tuned retrieval/prompt branch, and adds `POST …/missions/:id/watcher`.
+- **Per-tool RBAC** (Appendix G): generation/mutation endpoints + MCP tools carry `@Permissions()`
+  scopes (e.g. `populate_findings → compliance.write`, `generate_decision_memo →
+  procurement.write`) behind the existing `permissions.guard.ts` — finer-grained than the single
+  `acquisition-pathways` permission the v1 wizard endpoints reuse.
+
+The 38 prototype tools' production homes are in **Appendix G**: 4 client-only (drop server-side),
+~24 thin run_state reads/writes (rohan_api endpoints / MCP), 8 heavy generators (= the
+`arc_acquisition_*` DAGs; MCP-exposed here), 2 retrieval (ONERING retrieval layer).
 
 ---
 
@@ -239,6 +329,9 @@ foundation is shared.
 
 ### Recommended sequencing
 
+0. **F0 — no-AI persistence foundation.** Engine-agnostic; lands first (can run in parallel with
+   the engine-side S1/S2). Proves the FE rails (createMission, hydrate, persist-on-reload) before
+   any generation, and ships the typed `AcquisitionRunState` contract everything else targets.
 1. **Foundation + Requirements slice (R = S1–S8).** Single-threaded enough to keep small;
    proves the bridge, the materializer harness, and the FE hydration. **Gate the rest of the
    epic on this slice working in staging with the dev mock and one real DAG run.**
@@ -246,6 +339,9 @@ foundation is shared.
    review engines (lighter engine work, heavier Stream E content); K is the heaviest (writer +
    templates) and should start earliest of the three.
 3. **Finalize + prod-readiness convergence**, then per-org enablement behind the existing flag.
+4. **Workstream X — agentic chat + Auto-Run + Watcher.** After the per-step DAGs exist (so the MCP
+   tools have real DAGs to trigger and Auto-Run has stages to chain). Reuses the gen path built in
+   1–3; net-new is the `mcp_server` tools, the chaining DAG, the Watcher endpoint, and the prompt port.
 
 ### Dependency notes
 
@@ -268,12 +364,13 @@ metadata shape.
 
 Epic **`acquisition-pathways-onering-integration`** with sub-epics per workstream:
 
-- `…/foundation` — F1–F6.
-- `…/requirements` — the slice (S1–S8). **First; gates the rest.**
+- `…/foundation` — F0–F6 (**F0 = no-AI persistence + `AcquisitionRunState` contract; do first**).
+- `…/requirements` — the slice (S1–S8). **First generation slice; gates the rest.**
 - `…/pathway-selection` — P phases (+ Stream E vehicle data ticket).
 - `…/package-assembly` — K phases (+ Stream E templates ticket).
 - `…/integrity-check` — Z phases (+ Stream E FAR-rules ticket).
 - `…/finalize` — packaging/download.
+- `…/chat-control-plane` — Workstream X (MCP tools, Auto-Run DAG, Watcher, prompt port). After per-step DAGs.
 - `…/prod-readiness` — Stream D, parallel from kickoff.
 
 Each sub-epic's tickets copy the relevant `phase-meta` block + a link to this doc and the
@@ -311,3 +408,144 @@ slice doc.
 schemas**, **contract-vehicle reference data**, **government document templates**,
 **FAR/policy/protest rule set**, and the per-step trigger/materializer/hydration wiring (which
 is mechanical and shared after the slice).
+
+---
+
+## Appendix E — full `AcquisitionRunState` interface (ported from Alex's design doc)
+
+The single shared contract for the opaque `run_state` blob. Promote this to rohan_ui
+`types/acquisition-pathways.types.ts` (replacing the `Record<string, unknown>` alias) and mirror
+it in rohan_api. **Every per-step materializer must write keys whose shapes deserialize 1:1 into
+the five wizard signals** — this is the schema the `ui_projection_*.json` artifacts and the
+materializers (F4 + each workstream's S6-equivalent) target.
+
+```ts
+// run_state JSONB blob in acquisition_missions.run_state, returned by
+// GET /acquisition-pathways/missions/:id/state as { run_state: AcquisitionRunState }.
+interface AcquisitionRunState {
+  // --- record  → wizard.requirementsRecord (CrrField[]); materialized from canonicalRecord DAG ---
+  canonicalRecord?: Array<{
+    label: string;                                   // e.g. "Estimated Value" (edit key)
+    icon?: string;                                   // material-symbol name
+    tag: 'extracted' | 'inferred' | 'needs' | 'user'; // provenance chip; user edits flip to 'user'
+    text: string;
+    sources: Array<{                                 // SourcePill[]
+      kind: 'web' | 'library' | 'upload' | 'user-typed';
+      label: string;
+      href?: string;                                 // web sources
+      docId?: string;                                // library/upload sources
+    }>;
+  }>;
+  recordNotes?: string;                              // user-typed; not generated
+
+  // --- pathway → wizard.selectedPathway + PathwaySelectionService ---
+  pathways?: Array<{
+    id: 'low' | 'medium' | 'high';                   // tier + track id
+    name: string; vehicle: string;
+    vehicleType: 'existing' | 'new';
+    tierLabel: string; tierIcon: string;
+    contractType: string;                            // free-form pill text, NO enum
+    contractTypeClass?: string;                      // reserved SCSS modifier, unused today
+    rationale: string;                               // limited inline HTML; UI sanitizes
+    features: Array<{ icon: string; text: string; tone?: 'ok' | 'warn' | 'fail' }>;
+    recommended?: string;                            // badge label; omit for non-recommended
+    dimensions?: Record<string, unknown>;            // protestExposure, timeToAwardMonths,
+                                                     // vendorPoolSize, vehicleStandUp,
+                                                     // costRiskOwner, scopeFlexibility,
+                                                     // bestFor, mainRisk — used by
+                                                     // compare_pathways / simulate_pathway_change.
+                                                     // MUST be added to the rohan_ui interface
+                                                     // before the UI can render it.
+  }>;
+  selectedPathway?: 'low' | 'medium' | 'high' | null;
+  pathwayCommitted?: boolean;                        // default false; true after any select;
+                                                     // gates "Assemble package"
+
+  // --- artifacts (stage slug 'interview'/'package-assembly') → wizard.packageAssemblyCards ---
+  // PERSIST the durable Artifact, NOT the volatile AssemblyCard (UI rebuilds animation state).
+  scheduledArtifacts?: Array<{
+    key: string; title: string; subtitle?: string;
+    type: string;                                    // 'SOW' | 'RFP' | ... free string
+    filename: string; pages: number; icon: string; edited?: boolean;
+  }>;
+  // Optional resolved card states (terminal only) to skip re-animation on reload:
+  artifacts?: Array<{
+    artifact: { key: string; title: string; subtitle?: string; type: string; filename: string; pages: number; icon: string; edited?: boolean };
+    state: 'queued' | 'drafting' | 'done' | 'removed';
+    progress: number; label: string; removedReason?: string;
+  }>;
+  documents?: unknown[];                             // Rohan-created docs (distinct from artifacts)
+  removedDocuments?: unknown[];
+
+  // --- findings (UI 'integrity') → wizard.integrityCheckGroups (FindingGroup[]) ---
+  // Re-runs use mergeReplace: preserve edited/dismissed/dismissReason, append only isNew,
+  // title-dedup per group. Materializer MUST reproduce this server-side.
+  findings?: Array<{
+    key: string; label: string; name: string;
+    findings: Array<{
+      id: string;
+      artifact: string;
+      severity: 'high' | 'med' | 'low';              // note 'med' not 'medium'
+      category: 'policy' | 'consistency' | 'protest' | 'clause';
+      categoryLabel: string; title: string; meta: string;
+      sections: Array<{
+        label: string; quote: string; isOffending?: boolean;
+        sources?: Array<{ kind: 'web' | 'library' | 'upload'; label: string; docId?: string; href?: string }>;
+      }>;
+      actions: Array<{ label: string; icon: string; primary?: boolean; kind: 'apply' | 'dismiss' }>;
+      // USER TRIAGE STATE — generator sets initial; UI owns after first render; mergeReplace preserves:
+      expanded?: boolean; dismissed?: boolean; dismissReason?: string;
+      edited?: boolean;                              // == "applied"
+      isNew?: boolean;                               // mergeReplace marks genuinely-new re-run findings
+    }>;
+  }>;
+
+  // --- ledger (UI 'export') — generated + persisted; display panel deferred ---
+  ledger?: Array<{ field?: string; value?: string; confidence?: number; [k: string]: unknown }>;
+
+  // Run handle pointer (FE convenience; see Open question 2):
+  // e.g. requirementsRun?: { arcRunId: string; status: RunStatus }, one per stage.
+
+  [extraKey: string]: unknown;                       // blob tolerates extra keys
+}
+```
+
+## Appendix F — name-mapping (single source of truth, from Alex's design doc)
+
+The four vocabularies drift; this table governs. **`generate`'s `phase` enum uses the phase
+names**; materializers write the `run_state` key; the persisted stage cursor + URL slug are
+UI-side.
+
+| Phase (generate / DAG) | `run_state` key | Persisted stage cursor | Wizard URL slug | ONERING DAG |
+|---|---|---|---|---|
+| `record` | `canonicalRecord` (+`recordNotes`) | `record` | `requirements-record` | `arc_acquisition_requirements` |
+| `pathway` | `pathways`, `selectedPathway`, `pathwayCommitted` | `pathways` | `pathway-selection` | `arc_acquisition_pathways` |
+| `artifacts` | `scheduledArtifacts` (+`artifacts`,`documents`) | `interview` | `package-assembly` | `arc_acquisition_package` |
+| `findings` | `findings` | `integrity` | `integrity-check` | `arc_acquisition_integrity` |
+| `ledger` | `ledger` | `export` | `finalize-package` | (Finalize; reuses K render output) |
+
+Mode enum: `mode ∈ {drive, auto}` (map UI `manual→drive`).
+
+## Appendix G — 38 prototype tools → production homes (ported + re-homed for ONERING)
+
+The prototype's 38 client-side tools (`ua-acquisition-pathways/proxy/src/tools/*.js`), mapped to
+production. **Homes:** `client-only-drop` ×4 · `run_state-rw` ×24 (reads + simple writes +
+lifecycle) · `arc-dag-generator` ×8 (heavy LLM generation = the `arc_acquisition_*` DAGs, exposed
+as MCP tools in **Workstream X**) · `rohan_api-retrieval` ×2.
+
+> Under "ONERING for everything," the 8 generators are **not** in-process — each is (or maps onto)
+> an `arc_acquisition_*` DAG. The MCP tools in Workstream X are thin triggers/readers that call the
+> same DAG path the wizard buttons use; they do not re-implement generation.
+
+| Tool | Home | Notes |
+|---|---|---|
+| `navigate`, `set_mode`, `append_to_draft`, `load_sample_mission` | client-only-drop | UI-only; forbidden server-side (`set_mode` tracks mode as a `run_state` field) |
+| `get_mission_state`, `set_mission_name`, `set_mission_statement`, `add_attached_files` | run_state-rw | mission scalars + attachment refs |
+| `update_crr_field`, `add_crr_field`, `remove_crr_field`, `clear_canonical_record` | run_state-rw | CRR edits (flip `tag→'user'`) |
+| `select_pathway`, `compare_pathways`, `set_recommended_pathway`, `simulate_pathway_change` | run_state-rw | tier select + read/derive (no LLM); use `dimensions` |
+| `start_document`, `remove_document`, `get_document`, `list_documents`, `get_document_sections`, `update_document_section` | run_state-rw | document CRUD/sections |
+| `apply_finding`, `dismiss_finding` (reason mandatory), `explain_finding` | run_state-rw | finding triage (`apply`→`edited:true`) |
+| `intake_complete`, `complete_auto_run`, `pause_auto_run` | run_state-rw | lifecycle signals → Auto-Run state machine (Workstream X); the latter two were retired in the prototype |
+| `populate_canonical_record`, `populate_pathways`, `populate_artifacts`, `populate_findings`, `populate_ledger` | arc-dag-generator | the five stage DAGs (`{phase}`); findings DAG reproduces `mergeReplace` |
+| `complete_document`, `edit_document`, `generate_decision_memo` | arc-dag-generator | HTML prose generation (memo uses a two-call grounding pattern: rohan_api read + ONERING synth) |
+| `search_library`, `open_source_doc` | rohan_api-retrieval | ONERING retrieval layer (`PgVectorStore` / library) |

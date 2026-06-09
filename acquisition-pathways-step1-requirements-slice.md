@@ -9,12 +9,21 @@
 > Assembly, Integrity Check, Finalize) repeats this exact shape. The broad map is in
 > the companion **`acquisition-pathways-onering-integration-PLAN.md`**.
 
-**Bridge decision (locked):** heavy ONERING work runs on the **shipped Airflow
-`/onering/*` path** in rohan_api — *not* the auto-tag Service Bus path. Rationale and
-the three-topology comparison live in the companion plan's "Key architectural
-observations." A future refactor may add a fast synchronous `rohan-python-api` lane
-for low-latency ops (pathway scoring); that is an explicit **non-goal** here (see
-Non-goals).
+**Bridge decision (RESOLVED — team-agreed 2026-06-09):** all AP generation runs on the
+**shipped Airflow `/onering/*` path** in rohan_api — *not* the auto-tag Service Bus path, and
+*not* in-process answer-engine-v2 — for the **entire flow** (all five stages + agentic chat +
+Auto-Run). This was decided jointly after comparing the in-process alternative in Alex's
+*Acquisition Pathways Production Design Doc* (`ua-acquisition-pathways` PR #10); see the companion
+plan's **Decision record (2026-06-09)** and three-topology comparison. The fast synchronous
+`rohan-python-api` lane for low-latency ops is now a **possible far-future optimization only**,
+not a planned refactor (companion Non-goals/Future work).
+
+**Do Stage 0 first (engine-agnostic, no AI).** Per the companion plan's **phase F0** (adopted from
+Alex's Stage 0), wire the wizard onto real `run_state` with *zero* generation — promote `run_state`
+to the typed **`AcquisitionRunState`** interface (companion **Appendix E**), `createMission`
+(map `manual→drive`), hydrate the five wizard signals, and persist on each `nextAction` — **before
+or in parallel with** this slice. This slice's S7 then layers extraction-driven hydration on top of
+an already-proven persistence path rather than introducing both at once.
 
 Companion contracts are inline in this document (the slice is meant to be
 self-contained). The broader epic gets its own `…-contracts.md`.
@@ -153,10 +162,10 @@ on SUCCESS: GET …/missions/:id/state ─▶ hydrate requirementsRecord signal 
 
 - Pathway Selection scoring, Package Assembly writing, Integrity Check, Finalize — all
   in the companion epic.
-- The **fast synchronous `rohan-python-api` lane** (hybrid Option 2). Pathway scoring
-  and other low-latency ops will *later* move off Airflow onto a thin FastAPI/Service-Bus
-  path — tracked as a follow-up refactor, **not** built here. Flagged in the epic's
-  "Future work."
+- The **fast synchronous `rohan-python-api` lane** (hybrid Option 2). Given the team decision to
+  run **ONERING for the entire flow**, this is a **possible far-future optimization only** (revisit
+  only if profiling shows Airflow latency hurts pathway re-score UX) — **not** a planned refactor and
+  **not** built here. Flagged in the epic's "Future work."
 - Audit-trail UI, document viewer for source pills, download/export.
 - Prod-readiness (SLO/alerts/runbook) — folded into the epic's Stream D; this slice
   ships behind the existing feature flag in dev/staging only.
@@ -448,10 +457,12 @@ verification:
 - [ ] **S6.1** `ApRequirementsProjectionValidatorService` (ajv@^8, `additionalProperties:
   true`, **version-strict** on `schema_version` — reject unknown versions) per **Contract
   C12**. Reads the artifact via `OneringArtifactService` and validates against the C3 schema.
-- [ ] **S6.2** Define the `CrrField`/`SourcePill` TS shape in rohan_api (it does not exist there
-  today — `run_state` is opaque `Record<string, unknown>` and the types live only in rohan_ui;
-  add a small `acquisition-pathways/types/crr-field.ts` mirroring the rohan_ui definition so the
-  materializer is typed). Then `ApRequirementsMaterializerService.materialize(arcRunId)` per **Contract C13**,
+- [ ] **S6.2** Type the `CrrField`/`SourcePill` shape in rohan_api. **If F0 has landed**, reuse the
+  mirrored **`AcquisitionRunState`** interface it promotes (companion **Appendix E**) —
+  `canonicalRecord` is already `CrrField[]` there. **If the slice runs ahead of F0**, add a small
+  `acquisition-pathways/types/crr-field.ts` mirroring the rohan_ui definition (today `run_state` is
+  opaque `Record<string, unknown>` and the types live only in rohan_ui) and reconcile it into
+  `AcquisitionRunState` when F0 lands. Then `ApRequirementsMaterializerService.materialize(arcRunId)` per **Contract C13**,
   strict **Phase A** (read + validate + cross-check `json.run_id == run.arc_run_id` and
   `json.mission_id == run.mission_id`; no DB tx) / **Phase B** (map `fields[]` → `CrrField[]`,
   PATCH `acquisition_missions.run_state` shallow-merging `canonicalRecord` + clearing the
@@ -508,7 +519,9 @@ verification:
 
 - [ ] **S7.1** `AcquisitionPathwaysService`: replace `createMission()` (`…service.ts:25`) and
   `uploadFiles()` (`:36`) `of(MOCK…)` stubs with real `RequestService` calls per **Contracts
-  C9/C15** (`POST /acquisition-pathways/missions`, `POST …/missions/:id/files` multipart).
+  C9/C15** (`POST /acquisition-pathways/missions`, `POST …/missions/:id/files` multipart). Map the
+  UI composer's `manual→drive` so the persisted `mode ∈ {drive, auto}` (companion mode vocabulary /
+  Appendix F) — ideally this `createMission` wiring is already done in F0.
 - [ ] **S7.2** New `AcquisitionRunService`: `triggerRequirements(missionId)` →
   `POST …/missions/:id/requirements:extract`; `pollRun(arcRunId)` → polls
   `GET /onering/runs/:id` to terminal (10 s cadence, back off to 30 s after 5 min);
