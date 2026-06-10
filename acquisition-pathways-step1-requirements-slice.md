@@ -921,7 +921,7 @@ interface AcquisitionRequirementsConf {
 
 ```ts
 class TriggerRequirementsExtractDto {}                       // body empty; uploads resolved server-side
-interface RequirementsRunResponse { arcRunId: string; dagRunId: string; status: RunStatus; }
+interface RequirementsRunResponse { arc_run_id: string; dag_run_id: string; status: RunStatus; }  // snake_case per module wire convention (PR #2030 review)
 ```
 
 ### C8 — `or_pipeline_runs` additions
