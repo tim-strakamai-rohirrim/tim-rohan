@@ -170,9 +170,10 @@ Verified-in-code findings from the S6 PR review (rohan_api #2035, merged 2026-06
 syncing all repos to main. Ship status (updated 2026-06-15): **S1 ✅** (ONERING #409), **S2 ✅**
 (ONERING #414), **S3–S6 ✅** (rohan_api #2031 = S4, #2034 = S5, #2035 = S6), **S7 in PR review**
 (rohan_ui branch `tim/acquisition-pathways-onering/phase-S7` — substantially complete),
-**S8 files present on `main`** (`.github/workflows/acquisition-requirements-schema-check.yml`
-+ `test/acquisition-requirements.e2e-spec.ts`); confirm whether S8 merged under a separate PR —
-`#2036` is not in the recent merge log. **S9/S10 not started.**
+**S8 in PR review** (rohan_api #2036, open — not yet merged). **S8.1 (C17 schema cross-check
+CI) was dropped 2026-06-15** — see the Phase S8 / C17 notes below; #2036 now ships only the
+S8.2 E2E plus the two fix-forwards (`arc_run_id` run lookups + `requirements:extract` route
+escape). **S9/S10 not started.**
 
 1. **The assumed gateway routes do not exist (BLOCKER outside the dev mock) → Phase S9.**
    The `onering_api` gateway on ONERING main has routers only for `/v1/runs`,
@@ -196,9 +197,11 @@ syncing all repos to main. Ship status (updated 2026-06-15): **S1 ✅** (ONERING
    `requirements-record.types.ts` and rohan_api's `acquisition-pathways/types/crr-field.ts`
    match character-for-character (`CrrTag`/`SourceKind`/`SourcePill`/`CrrField`). F0 has not
    landed — `AcquisitionRunState` is still `Record<string, unknown>`
-   (`acquisition-mission.entity.ts:81`). Note: S8's CI cross-check covers the **artifact
-   schema**, not these UI-facing TS types; the type mirror is reconciled by F0, not S8. No new
-   phase; reconcile into `AcquisitionRunState` when F0 lands (as the S6.2 step already says).
+   (`acquisition-mission.entity.ts:81`). Note: the UI-facing `CrrField` TS types are reconciled
+   by F0, not S8 — the (since-dropped) S8.1 cross-check would only have covered the **artifact
+   schema** regardless, and the retained S8 in-repo fixture-sync test guards only the two
+   vendored fixture copies. No new phase; reconcile into `AcquisitionRunState` when F0 lands (as
+   the S6.2 step already says).
 
 4. **Dev mock bricks a mission's extraction after a process restart → Phase S10.** The mock's
    registries are per-process. After a restart, `getDagRunStatus` for an in-flight mocked run
@@ -320,7 +323,7 @@ and writes a `CrrField[]`-shaped UI projection. Reuse the ingestion + `EvidenceS
   Update `docs/specs/minio_path_contract.md` in the same PR (repo rule for bucket-layout
   changes). Read-side consumers derive the runs prefix via
   `onering_shared.storage.paths.runs_prefix_for(store)` — never hard-code `AGENT_RUNS/`.
-- [ ] **S1.6** Add the sample fixture (referenced by S8's dev mock and S-CI cross-check) and
+- [ ] **S1.6** Add the sample fixture (referenced by S6's dev mock and vendored for the S8 E2E) and
   the factory unit test (step ordering/count, no metadata/structure/evaluation steps).
 - [ ] **S1.7** Note the factory + invocation in `arc_agent_writer/CLAUDE.md`.
 
@@ -643,37 +646,55 @@ verification:
 - [ ] **S7.6** Spec the run service (poll cadence + terminal resolution) + a wizard hydration
   test. Keep the existing requirements-record step spec green.
 
-### Phase S8 — CI: schema + fixture cross-check [TEST_REVIEW]
+### Phase S8 — Slice E2E (+ run-lookup / route fix-forwards) [TEST_REVIEW]
+
+> **S8.1 dropped 2026-06-15 (rohan_api #2036).** The cross-repo schema cross-check CI was
+> modeled on a compliance "Phase 12.2" precedent that turned out to be planned-but-never-built,
+> so it was net-new cross-repo CI infrastructure rather than a mirror of an existing process —
+> removed rather than introduced here. The byte-equal fixture-sync assertion survives as an
+> **in-repo** test inside the S8.2 E2E (test ↔ dev-mock copy; no ONERING/pinned-ref
+> dependency). Contract **C17 is accordingly dropped** (see its entry below).
 
 ```phase-meta
 phase: S8
-title: CI - acquisition_requirements schema + mock-vs-engine fixture cross-check
+title: rohan_api - acquisition_requirements slice E2E + arc_run_id/route fix-forwards
 tags: [TEST_REVIEW]
 repo: rohan_api
 base_branch: phase-S6
 depends_on: [S6]
 files:
-  - .github/workflows/acquisition-requirements-schema-check.yml
   - test/acquisition-requirements.e2e-spec.ts
   - test/fixtures/ui_projection_acquisition_requirements.fixture.json
+  - test/run-sequential.integration-spec.ts
 contracts:
-  - "C17 schema cross-check job"
+  - "C16 run_state hydration (exercised via E2E)"
+  - "C13 materializer field mapping (exercised via E2E)"
 verification:
   - npm run lint
-  - npm run test:e2e -- --grep acquisition-requirements
+  - npm run test:e2e -- -t "Acquisition"
 ```
 
-**Goal**: catch artifact-schema drift between ONERING and rohan_api.
+**Goal**: prove the requirements slice end-to-end through the in-process Airflow mock, and
+land the fix-forwards that surfaced while wiring it.
 
 **Steps**:
 
-- [ ] **S8.1** Per-PR job: validate the rohan_api ajv compiler against the ONERING-side sample
-  fixture (at the pinned ref) **and** assert byte-equal sync between
-  `src/onering/__mocks__/ui_projection_acquisition_requirements.fixture.json` and the ONERING
-  fixture. Mirrors compliance Phase 12.2.
-- [ ] **S8.2** E2E using the in-process mock (`ONERING_AIRFLOW_BASE_URL` empty): create
+- [x] ~~**S8.1** Per-PR CI job cross-checking the rohan_api ajv compiler + vendored fixtures
+  against ONERING at a pinned ref.~~ **Dropped — see note above.** The retained in-repo
+  fixture-sync assertion (byte-equal between `test/fixtures/…` and
+  `src/onering/__mocks__/ui_projection_acquisition_requirements.fixture.json`) lives inside the
+  S8.2 E2E.
+- [x] **S8.2** E2E using the in-process mock (`ONERING_AIRFLOW_BASE_URL` empty): create
   mission → upload → extract → poll → assert `run_state.canonicalRecord` materialized as
-  `CrrField[]`; assert idempotent re-materialize.
+  `CrrField[]`; assert idempotent re-materialize. Registered in
+  `test/run-sequential.integration-spec.ts`.
+- [x] **S8.3 (fix-forward)** `GET /onering/runs/:id` accepts `arc_run_id` lookups, not just
+  the row UUID — the FE polls with the `arcRunId` (C16). Dropped `ParseUUIDPipe`; the service
+  picks the lookup column by UUID-shape detection, both branches org-scoped. Surfaced by S7
+  ([rohan_ui#2161](https://github.com/rohancapture/rohan_ui/pull/2161)).
+- [x] **S8.4 (fix-forward)** `POST …/requirements:extract` made reachable under Fastify:
+  find-my-way v9 escapes a literal colon with `::`, not the path-to-regexp `\:` shipped in S5
+  (every plain request 404'd). Also pinned to the documented `200`. Caught by the S8.2 E2E.
 
 ### Phase S9 — Engine: `onering_api` acquisition gateway routes (upload write + projection read) [PYTHON]
 
@@ -794,13 +815,15 @@ stuck QUEUED/RUNNING (and the mission 409-blocked) forever; cap the projection r
 | S5 | — | acquisition-pathways/{controllers,services}, onering/services/pipeline | — | — |
 | S6 | — | acquisition-pathways/services (validator+materializer), onering/services, __mocks__ | — | — |
 | S7 | — | — | pages/acquisition-pathways/{services,components,wizard,types} | — |
-| S8 | — | .github/workflows, test/ | — | — |
+| S8 | — | test/ (E2E + fixture); src/onering/{controllers,services} (fix-forwards) | — | — |
 | S9 | onering_api/{routers,services,tests}, docs/specs | — | — | — |
 | S10 | — | onering/services (mock + pipeline), onering/clients | — | — |
 
 No file is touched by two phases — except S10, which amends three S5/S6 files
-(`onering-airflow-mock.service.ts`, `onering-pipeline.service.ts`, `onering-api.client.ts`);
-safe because S6 is already merged to main. **Stacks:** S1→S2 (ONERING); S3→S4→S5→S6 then S8
+(`onering-airflow-mock.service.ts`, `onering-pipeline.service.ts`, `onering-api.client.ts`),
+and S8's fix-forwards, which amend the S5 `requirements:extract` route plus
+`onering-runs.controller.ts` / `onering-pipeline.service.ts` (the `arc_run_id` lookup); safe
+because S6 is already merged to main. **Stacks:** S1→S2 (ONERING); S3→S4→S5→S6 then S8
 (rohan_api); S7 starts after S3+S5 contracts freeze (rohan_ui, off main). **S9 and S10 branch
 off main** in their repos (their dependencies are merged) and are independent of each other.
 
@@ -837,7 +860,7 @@ contracts for detail.
   precedent); document staging from `document_uris` is a new step (no conf-driven intake
   exists today); inject empty defaults where extraction expects upstream projections it no
   longer receives (mirror the compliance factory); never emit `tag='user'`. Ships a sample
-  fixture consumed downstream by S6's dev mock and S8's cross-check. Implements C1, C2, C3.
+  fixture consumed downstream by S6's dev mock and vendored for the S8 E2E. Implements C1, C2, C3.
 
 - **S2 — `arc_acquisition_requirements` DAG + JSON schema (ONERING).** Ships the DAG
   (mirrors `arc_strategy_pipeline_dag.py`, invokes the S1 factory via
@@ -897,12 +920,13 @@ contracts for detail.
   importable behind `?demo=1`; debounce user-edit PATCHes; keep the existing step spec green.
   Implements C9/C10/C15 consumption and C16.
 
-- **S8 — CI schema + fixture cross-check (rohan_api).** Guards against artifact-schema drift:
-  a per-PR job validates the rohan_api ajv compiler against the ONERING sample fixture (pinned
-  ref) and asserts byte-equal sync with the `__mocks__/` fixture, plus an E2E using the
-  in-process mock driving create → upload → extract → poll → asserting `canonicalRecord`
-  materialized as `CrrField[]` and idempotent re-materialize. Depends on S6. Mirrors compliance
-  Phase 12.2. Stacks on phase-S6. Implements C17.
+- **S8 — Slice E2E + fix-forwards (rohan_api).** An E2E using the in-process mock drives
+  create → upload → extract → poll → asserting `canonicalRecord` materialized as `CrrField[]`
+  and idempotent re-materialize, with an in-repo byte-equal check that the E2E fixture and the
+  `__mocks__/` fixture stay in sync. Plus two fix-forwards the wiring surfaced: `arc_run_id`
+  run-poll lookups (C16) and the `requirements:extract` Fastify route escape. Depends on S6.
+  Stacks on phase-S6. **The originally-planned S8.1 schema cross-check CI (C17) was dropped —
+  net-new cross-repo CI modeled on a never-built compliance precedent.**
 
 - **S9 — `onering_api` acquisition gateway routes (ONERING).** Lands the two `/v1/acquisition`
   routes that merged rohan_api code already calls: `POST /v1/acquisition/uploads` (multipart
@@ -939,7 +963,7 @@ trigger the DAG (tracked in `or_pipeline_runs` via a new `mission_id` link), val
 emitted artifact and materialize it into `acquisition_missions.run_state.canonicalRecord` as
 `CrrField[]`; and replace the rohan_ui mock seed with real server-hydrated data plus a
 polling/drafting state. An in-process Airflow dev mock lets the FE iterate without the real
-DAG, and a CI cross-check guards the shared artifact schema. Ships behind the existing
+DAG, and a slice E2E exercises the whole path end-to-end. Ships behind the existing
 `AcquisitionPathways` feature flag (dev/staging only). Companion epic:
 `acquisition-pathways-onering-integration-PLAN.md`.
 
@@ -968,8 +992,10 @@ DAG, and a CI cross-check guards the shared artifact schema. Ships behind the ex
 - [ ] **S7** The wizard hydrates `requirementsRecord` from `run_state.canonicalRecord` (real
   data, mock removed except `?demo=1`), with mission create → upload → extract → poll wired and
   user edits persisted via debounced PATCH; run-service + hydration specs pass.
-- [ ] **S8** A per-PR CI job validates the rohan_api ajv compiler against the pinned ONERING
-  fixture, asserts byte-equal mock sync, and an E2E drives the slice end-to-end via the mock.
+- [ ] **S8** An E2E drives the slice end-to-end via the in-process mock (create → upload →
+  extract → poll → `canonicalRecord` as `CrrField[]` → idempotent re-materialize), with an
+  in-repo byte-equal check keeping the E2E fixture and the `__mocks__/` fixture in sync. (The
+  originally-planned C17 schema cross-check CI was dropped — see Phase S8.)
 - [ ] **S9** `POST /v1/acquisition/uploads` and `GET /v1/acquisition/runs/{run_id}/requirements-projection`
   exist on the `onering_api` gateway matching C18/C19 (the shapes the merged rohan_api clients
   call), with `object_key` validation + tenant-prefix check and route tests; the slice works
@@ -1017,7 +1043,7 @@ stacking — Stream B freezes them first and Streams A/C build against the schem
 | C14 In-process Airflow mock | S6 | Dev/staging only; **as-built:** in-memory at the read seam, also gated off when Key Vault is set |
 | C15 FE upload/extract consumption | S7 | rohan_ui services |
 | C16 `run_state` hydration contract (FE) | S7 | signal hydration + poll |
-| C17 Schema cross-check CI | S8 | mock-vs-engine fixture sync |
+| C17 Schema cross-check CI | S8 | ~~mock-vs-engine fixture sync~~ **DROPPED** — replaced by an in-repo fixture-sync test |
 | C18 `POST /v1/acquisition/uploads` (gateway) | S9 | Shape frozen by the shipped S5 client |
 | C19 `GET /v1/acquisition/runs/{run_id}/requirements-projection` (gateway) | S9 | Shape frozen by the shipped S6 client |
 | C20 Mock unknown-run recovery | S10 | Refresh-path fix; mock keeps throw semantics |
@@ -1184,7 +1210,7 @@ unknown). Throws `AcquisitionSchemaError` (map to 502).
 **As built (rohan_api #2035):** `loadAndValidate(run: OrPipelineRun)` takes the run **row**
 rather than a bare `arcRunId` — callers already hold the row and the artifact read needs
 `organization_id` for tenant headers. A pure `validate(raw, contextId)` half is exposed for
-tests and the S8 cross-check. Provided by `OneringModule` (not the AP module) to avoid a
+tests and the S8 E2E. Provided by `OneringModule` (not the AP module) to avoid a
 circular module import.
 
 ### C13 — Materializer behavior + field→CrrField mapping
@@ -1248,10 +1274,18 @@ present → `requirementsRecord.set(canonicalRecord)`. Else if `run_state.requir
 is non-terminal → show the (new) drafting state + poll `GET /onering/runs/:arcRunId`; on SUCCESS
 refetch state. User edits debounce-PATCH `run_state.canonicalRecord`.
 
-### C17 — Schema cross-check CI
+### C17 — Schema cross-check CI ~~(S8.1)~~ — **DROPPED 2026-06-15**
 
-Per-PR: validate rohan_api ajv compiler against the ONERING sample fixture (pinned ref) and
-assert byte-equal sync with `src/onering/__mocks__/ui_projection_acquisition_requirements.fixture.json`.
+**Originally:** a per-PR CI job validating the rohan_api ajv compiler against the ONERING
+sample fixture (at a pinned ref) and asserting byte-equal sync with
+`src/onering/__mocks__/ui_projection_acquisition_requirements.fixture.json`.
+
+**Dropped (rohan_api #2036):** it was modeled on a compliance "Phase 12.2" cross-check that was
+planned but never built, making this net-new cross-repo CI infrastructure rather than a mirror
+of an existing process. What survives is the **in-repo half** — a byte-equal test inside the
+S8.2 E2E asserting the two vendored fixture copies (`test/fixtures/…` ↔ `src/onering/__mocks__/…`)
+stay in sync. Parity with ONERING's own sample is no longer CI-enforced; if revived later, land
+it as its own contract once a real shared-schema CI precedent exists.
 
 ### C18 — `POST /v1/acquisition/uploads` (onering_api gateway, S9)
 
