@@ -77,12 +77,13 @@ How the relevant areas work today (verified in code):
   So the S6 materializer must define the `CrrField`/`SourcePill` shape in rohan_api itself (the
   documented keys: `canonicalRecord, pathways, findings, ledger, artifacts, documents,
   selectedPathway, pathwayCommitted`).
-- **The FE contract for the record is `CrrField[]`.** The wizard owns
-  `requirementsRecord = signal<CrrField[]>(INITIAL_REQUIREMENTS_RECORD_FIELDS)`
-  (`acquisition-pathways-wizard.component.ts:66`) and passes it to the step as the
+- **The FE contract for the record is `CrrField[]`.** The wizard owns a
+  `requirementsRecord = signal<CrrField[]>(…)` and passes it to the step as the
   `record` input. `RequirementsRecordStepComponent` reads `record` and renders
-  per-field `tag` + `sources`. Today the wizard never reads/writes the server
-  `run_state`; that wiring is new here.
+  per-field `tag` + `sources`. **Pre-S7** the signal was seeded with
+  `INITIAL_REQUIREMENTS_RECORD_FIELDS` and the wizard never read/wrote the server
+  `run_state`. **S7 changed this** to `signal<CrrField[]>([])` hydrated from
+  `run_state.canonicalRecord`, with the mock seed moved behind `?demo=1`.
 - **ONERING extraction already emits line-level evidence.** `pipelines/requirements/`
   and `pipelines/_common/models.py` define `EvidenceSpan(doc_id, start_line, end_line,
   page_number)` and the 4-phase pattern (per-chunk extract → per-doc aggregate → master
@@ -166,9 +167,12 @@ on SUCCESS: GET …/missions/:id/state ─▶ hydrate requirementsRecord signal 
 ## Post-S6 review findings (2026-06-12)
 
 Verified-in-code findings from the S6 PR review (rohan_api #2035, merged 2026-06-12), after
-syncing all repos to main. Ship status at time of writing: **S1 ✅** (ONERING #409), **S2 ✅**
-(ONERING #414), **S3–S6 ✅** (rohan_api #2031 = S4, #2034 = S5, #2035 = S6), **S7 in
-progress** (rohan_ui branch), **S8 PR open** (rohan_api #2036).
+syncing all repos to main. Ship status (updated 2026-06-15): **S1 ✅** (ONERING #409), **S2 ✅**
+(ONERING #414), **S3–S6 ✅** (rohan_api #2031 = S4, #2034 = S5, #2035 = S6), **S7 in PR review**
+(rohan_ui branch `tim/acquisition-pathways-onering/phase-S7` — substantially complete),
+**S8 files present on `main`** (`.github/workflows/acquisition-requirements-schema-check.yml`
++ `test/acquisition-requirements.e2e-spec.ts`); confirm whether S8 merged under a separate PR —
+`#2036` is not in the recent merge log. **S9/S10 not started.**
 
 1. **The assumed gateway routes do not exist (BLOCKER outside the dev mock) → Phase S9.**
    The `onering_api` gateway on ONERING main has routers only for `/v1/runs`,
@@ -580,6 +584,7 @@ base_branch: base
 depends_on: [S5]
 files:
   - src/app/pages/acquisition-pathways/services/acquisition-pathways.service.ts
+  - src/app/pages/acquisition-pathways/services/acquisition-pathways-api.service.ts
   - src/app/pages/acquisition-pathways/services/acquisition-run.service.ts
   - src/app/pages/acquisition-pathways/services/acquisition-run.service.spec.ts
   - src/app/pages/acquisition-pathways/components/landing/ap-landing.component.ts
@@ -603,9 +608,11 @@ verification:
 
 **Steps**:
 
-- [ ] **S7.1** `AcquisitionPathwaysService`: replace `createMission()` (`…service.ts:25`) and
-  `uploadFiles()` (`:36`) `of(MOCK…)` stubs with real `RequestService` calls per **Contracts
-  C9/C15** (`POST /acquisition-pathways/missions`, `POST …/missions/:id/files` multipart). Pass the
+- [ ] **S7.1** Replace the `createMission()`/`uploadFiles()` `of(MOCK…)` stubs with real
+  `RequestService` calls per **Contracts C9/C15** (`POST /acquisition-pathways/missions`,
+  `POST …/missions/:id/files` multipart). **As built:** these HTTP calls live in a dedicated
+  `AcquisitionPathwaysApiService` (created in S7), not on `AcquisitionPathwaysService` — the
+  landing component and wizard call the api service directly. Pass the
   composer's `mode` through **unchanged** — the shipped contract is `mode ∈ {manual, auto}`
   (`acquisition-mission.entity.ts:10`, DTO `@IsIn(ACQUISITION_MISSION_MODES)`, DB CHECK
   constraint; `init_acquisition_pathways.sql` migrates legacy `drive→manual`). **No
