@@ -157,11 +157,68 @@ on SUCCESS: GET …/missions/:id/state ─▶ hydrate requirementsRecord signal 
 
 | # | Question | Proposed default |
 |---|----------|------------------|
-| 1 | How do uploads get **written** to MinIO? rohan_api has no MinIO write client — `OneringArtifactService` only *reads*, via the `onering_api` gateway — and ONERING's design rule is "bytes always stream — MinIO never leaves the OneRing network". | **Add an upload route to the `onering_api` gateway** (ONERING-side, cross-repo — a small standalone PR or riding the S2 branch) and call it from `ApUploadsService` via the existing OneRing API client. Giving rohan_api direct MinIO credentials would violate the gateway design; only do that with ONERING owners' sign-off. Confirm bucket + prefix convention against `docs/specs/minio_path_contract.md` before S6. |
+| 1 | How do uploads get **written** to MinIO? rohan_api has no MinIO write client — `OneringArtifactService` only *reads*, via the `onering_api` gateway — and ONERING's design rule is "bytes always stream — MinIO never leaves the OneRing network". | **Add an upload route to the `onering_api` gateway** (ONERING-side, cross-repo — a small standalone PR or riding the S2 branch) and call it from `ApUploadsService` via the existing OneRing API client. Giving rohan_api direct MinIO credentials would violate the gateway design; only do that with ONERING owners' sign-off. Confirm bucket + prefix convention against `docs/specs/minio_path_contract.md` before S6. **Status (2026-06-12): the route never landed** — S2 (ONERING #414) merged without it, and S5/S6 shipped rohan_api clients against *assumed* routes. Now tracked as **Phase S9** (Contracts C18/C19). |
 | 2 | Do we track the run in `or_pipeline_runs` (new `mission_id` column) or store the run handle inside `run_state.requirementsRun`? | **`or_pipeline_runs` + `mission_id`** — reuses `refreshRunStatus`, `getRun`, artifact listing, and matches the compliance precedent. `run_state` stores only a pointer (`run_state.requirementsRun = { arcRunId, status }`) for the FE convenience. |
 | 3 | Does `RunStatus.MATERIALIZING` already exist, or is it added here? | Confirmed **absent** (current members: `QUEUED/RUNNING/SUCCESS/FAILED`, in `src/onering/enums/run-status.enum.ts` — its own file, not `run-type.enum.ts`); add it there (mirrors compliance Phase 4). `refreshRunStatus` switches only over `AirflowDagRunState`, not `RunStatus`, so no exhaustiveness break — just add the `MATERIALIZING` case where `RunStatus` is serialized to the FE. |
 | 4 | Does `pipelines.requirements`'s aggregation reusably generalize, or do we fork a fresh `pipelines.acquisition_requirements`? | **Fork** a new pipeline package cloning the 4-phase structure + `EvidenceSpan`; new prompts + Pydantic models. Reuse `pipelines/_common/` helpers unchanged. Avoids coupling AP to RFP-response semantics. |
 | 5 | Where does the FE poll from — a new AP status endpoint or `GET /onering/runs/:id`? | **`GET /onering/runs/:id`** (already does `refreshRunStatus`). The trigger response returns the run id; the FE polls it to terminal, then refetches mission state. |
+
+## Post-S6 review findings (2026-06-12)
+
+Verified-in-code findings from the S6 PR review (rohan_api #2035, merged 2026-06-12), after
+syncing all repos to main. Ship status at time of writing: **S1 ✅** (ONERING #409), **S2 ✅**
+(ONERING #414), **S3–S6 ✅** (rohan_api #2031 = S4, #2034 = S5, #2035 = S6), **S7 in
+progress** (rohan_ui branch), **S8 PR open** (rohan_api #2036).
+
+1. **The assumed gateway routes do not exist (BLOCKER outside the dev mock) → Phase S9.**
+   The `onering_api` gateway on ONERING main has routers only for `/v1/runs`,
+   `/v1/integrations`, `/v1/mission-control`, `/v1/onboarding`, `/v1/opportunities` — **no
+   `/v1/acquisition/*` routes**, and no open ONERING PR adds them. Both shipped rohan_api
+   clients point at assumed routes: S5's `uploadAcquisitionDocument` →
+   `POST /v1/acquisition/uploads` (`onering-api.client.ts:353`) and S6's
+   `getAcquisitionRequirementsProjection` →
+   `GET /v1/acquisition/runs/{run_id}/requirements-projection`. In any environment with real
+   Airflow the slice breaks at **upload time** (before the S6 read is ever reached); even a
+   successful engine run would then fail materialization (gateway 404 → `AcquisitionSchemaError`
+   → run FAILED). The dev mock masks all of this locally. Open-Q1 anticipated the upload route
+   "riding the S2 branch", but S2 merged without it. **Action: Phase S9 (Contracts C18/C19).**
+
+2. **`or_pipeline_runs.mission_id` nullability — verified correct, no action.**
+   `@Column({ type: 'int', nullable: true }) mission_id: number | null`
+   (`or-pipeline-run.entity.ts:32`). The materializer's null-guard is right and necessary
+   (non-acquisition runs carry null `mission_id`).
+
+3. **`CrrField` mirror — zero drift today, F0 still pending.** rohan_ui's
+   `requirements-record.types.ts` and rohan_api's `acquisition-pathways/types/crr-field.ts`
+   match character-for-character (`CrrTag`/`SourceKind`/`SourcePill`/`CrrField`). F0 has not
+   landed — `AcquisitionRunState` is still `Record<string, unknown>`
+   (`acquisition-mission.entity.ts:81`). Note: S8's CI cross-check covers the **artifact
+   schema**, not these UI-facing TS types; the type mirror is reconciled by F0, not S8. No new
+   phase; reconcile into `AcquisitionRunState` when F0 lands (as the S6.2 step already says).
+
+4. **Dev mock bricks a mission's extraction after a process restart → Phase S10.** The mock's
+   registries are per-process. After a restart, `getDagRunStatus` for an in-flight mocked run
+   throws "mock DAG run not found" — which `refreshRunStatus()`'s outer `catch` **swallows with
+   a log warning, leaving the run QUEUED/RUNNING forever**. The C10 in-flight guard then 409s
+   every re-trigger for that mission (`QUEUED | RUNNING | MATERIALIZING` all block) until
+   someone manually clears the row. Worse than the "artifact 404" failure assumed during
+   review: the run never reaches the artifact read at all. Same orphaned-QUEUED class as the
+   documented stage-run edge case, but stage soft-returns `already_staging` while this path
+   hard-409s. Dev-only, but a real trap for UI engineers. **Action: Phase S10 (Contract C20).**
+
+5. **Artifact JSON read is size-unbounded — folded into S10 as cheap hardening.** The shared
+   gateway axios client is created with `maxContentLength: Infinity`
+   (`onering-api.client.ts:106`), so the projection read parses `resp.data` with no size cap —
+   same class as the existing gateway JSON reads. Low severity; S10 caps it per-request rather
+   than touching the shared client default.
+
+**As-built contract deviations (documented in rohan_api #2035, now reflected in C12/C13/C14
+below):** C12's `loadAndValidate` takes the run **row** (not a bare `arcRunId`) for tenant
+context; C13 maps the pill label as `doc_name || doc_id` (not `??` — C3 allows empty-string
+`doc_name`); C14's mock serves the stamped fixture **in-memory at the artifact-read seam**
+(rohan_api has no MinIO write client by design) and additionally gates off when `KEY_VAULT_NAME`
+is set; the validator + materializer are **provided by `OneringModule`** (not the AP module) to
+avoid a circular import.
 
 ## Non-goals (this slice)
 
@@ -611,6 +668,112 @@ verification:
   mission → upload → extract → poll → assert `run_state.canonicalRecord` materialized as
   `CrrField[]`; assert idempotent re-materialize.
 
+### Phase S9 — Engine: `onering_api` acquisition gateway routes (upload write + projection read) [PYTHON]
+
+> Added 2026-06-12 from post-S6 review finding 1. **Blocker for any environment with real
+> Airflow** — both routes are already called by merged rohan_api code (S5 + S6) against the
+> shapes frozen in C18/C19 below. If the gateway must deviate, change the two rohan_api
+> client methods in the same coordinated change.
+
+```phase-meta
+phase: S9
+title: ONERING - onering_api /v1/acquisition routes (upload write + requirements-projection read)
+tags: [PYTHON]
+repo: onering
+base_branch: base
+depends_on: [S2]
+files:
+  - onering_api/routers/acquisition.py
+  - onering_api/services/acquisition.py
+  - onering_api/schemas.py
+  - onering_api/server.py
+  - onering_api/tests/test_acquisition_routes.py
+  - docs/specs/minio_path_contract.md
+contracts:
+  - "C18 POST /v1/acquisition/uploads"
+  - "C19 GET /v1/acquisition/runs/{run_id}/requirements-projection"
+verification:
+  - uv run pytest onering_api/tests/test_acquisition_routes.py
+```
+
+**Goal**: land the two gateway routes that the merged rohan_api S5/S6 clients already call, so
+the slice works against real Airflow/MinIO (today it only works under the in-process dev mock).
+
+**Steps**:
+
+- [ ] **S9.1** New `onering_api/routers/acquisition.py` with
+  `APIRouter(prefix="/v1/acquisition", dependencies=[Depends(get_principal)])`, registered in
+  `server.py` (mirror the existing `include_router` block, `server.py:92-101`).
+- [ ] **S9.2** `POST /v1/acquisition/uploads` per **Contract C18**: multipart body with an
+  `object_key` form field + a `file` part; stream the bytes to MinIO at `object_key` (mirror
+  `routers/user_uploads.py`'s streaming-upload pattern — never buffer the whole file).
+  Validate `object_key` against `acquisition/{org_id}/{mission_id}/uploads/{filename}`
+  (reject traversal/absolute keys → 400) and require the `{org_id}` segment to equal the
+  `X-Onering-Org-Id` tenant header → 403 on mismatch (tenant isolation — the key is
+  caller-computed in rohan_api's `ApUploadsService`).
+- [ ] **S9.3** `GET /v1/acquisition/runs/{run_id}/requirements-projection` per **Contract
+  C19**: resolve the run prefix via `onering_shared.storage.paths.runs_prefix_for(store)`
+  (never hard-code `AGENT_RUNS/`), read
+  `pipelines/acquisition_requirements_extraction/ui/ui_projection_acquisition_requirements.json`,
+  return the raw JSON (200) or 404 when absent. rohan_api maps 404 → `null` → retains its
+  "SUCCESS but no artifact = engine-contract violation" semantics.
+- [ ] **S9.4** Update `docs/specs/minio_path_contract.md` with the `acquisition/…/uploads/`
+  input prefix (repo rule for bucket-layout changes; the S1/S2 PRs documented only the run
+  artifact path).
+- [ ] **S9.5** Route tests: upload happy path (201 created / 200 overwrite + response shape),
+  `object_key` validation rejects (400) + org mismatch (403), projection read happy path,
+  projection 404 when the artifact is absent.
+
+### Phase S10 — rohan_api: dev-mock restart recovery + artifact read size cap [BACKEND_DB]
+
+> Added 2026-06-12 from post-S6 review findings 4 and 5. Dev-ergonomics fix (a restart
+> mid-extraction permanently 409-blocks the mission under the mock) plus cheap read-path
+> hardening. Branches off main — S6 is merged.
+
+```phase-meta
+phase: S10
+title: rohan_api - Airflow mock unknown-run recovery + projection read maxContentLength
+tags: [BACKEND_DB]
+repo: rohan_api
+base_branch: base
+depends_on: [S6]
+files:
+  - src/onering/services/onering-airflow-mock.service.ts
+  - src/onering/services/onering-airflow-mock.service.spec.ts
+  - src/onering/services/onering-pipeline.service.ts
+  - src/onering/services/onering-pipeline.service.spec.ts
+  - src/onering/clients/onering-api.client.ts
+contracts:
+  - "C20 Mock unknown-run recovery"
+verification:
+  - npm run lint
+  - npm run test -- src/onering/services/onering-airflow-mock.service.spec.ts
+  - npm run test -- src/onering/services/onering-pipeline.service.spec.ts
+```
+
+**Goal**: a process restart while a mocked extraction is in flight must not leave the run
+stuck QUEUED/RUNNING (and the mission 409-blocked) forever; cap the projection read size.
+
+**Steps**:
+
+- [ ] **S10.1** Per **Contract C20**: in `refreshRunStatus()`'s catch path, when the mock owns
+  the DAG (`airflowMock.shouldHandle(run.airflow_dag_id)`) and the error is the mock's
+  unknown-run 404, flip the run to FAILED with the literal
+  `error_message = 'Dev Airflow mock lost run state (process restart) — re-trigger the extraction'`
+  and save. This unblocks the C10 in-flight 409 guard. **Gotcha:** keep the mock's
+  `getDagRunStatus` *throwing* on unknown runs — `reconcileTriggerFailure()`'s probe semantics
+  ("status check throws ⇒ the DAG run never reached Airflow ⇒ fail the row") depend on it;
+  recovery belongs in the refresh path, not in the mock's return value.
+- [ ] **S10.2** Expose the unknown-run case distinguishably from the mock (e.g. a typed
+  `OneringAirflowError` flag or a `isUnknownRun(dagRunId)` helper) rather than string-matching
+  the message in the pipeline service.
+- [ ] **S10.3** Cap the projection read: pass a per-request `maxContentLength` (25 MB) in
+  `getAcquisitionRequirementsProjection`'s axios config (finding 5 — the shared client default
+  is `Infinity`; do not change the shared default, other routes stream large artifacts).
+- [ ] **S10.4** Tests: restart simulation (run row QUEUED + empty mock registry → refresh
+  flips FAILED with the literal message; subsequent `requirements:extract` no longer 409s);
+  `reconcileTriggerFailure` probe semantics unchanged; oversized projection response rejects.
+
 ## Phase order, dependencies, parallelism
 
 ### File-touch matrix
@@ -625,20 +788,29 @@ verification:
 | S6 | — | acquisition-pathways/services (validator+materializer), onering/services, __mocks__ | — | — |
 | S7 | — | — | pages/acquisition-pathways/{services,components,wizard,types} | — |
 | S8 | — | .github/workflows, test/ | — | — |
+| S9 | onering_api/{routers,services,tests}, docs/specs | — | — | — |
+| S10 | — | onering/services (mock + pipeline), onering/clients | — | — |
 
-No file is touched by two phases. **Stacks:** S1→S2 (ONERING); S3→S4→S5→S6 then S8
-(rohan_api); S7 starts after S3+S5 contracts freeze (rohan_ui, off main).
+No file is touched by two phases — except S10, which amends three S5/S6 files
+(`onering-airflow-mock.service.ts`, `onering-pipeline.service.ts`, `onering-api.client.ts`);
+safe because S6 is already merged to main. **Stacks:** S1→S2 (ONERING); S3→S4→S5→S6 then S8
+(rohan_api); S7 starts after S3+S5 contracts freeze (rohan_ui, off main). **S9 and S10 branch
+off main** in their repos (their dependencies are merged) and are independent of each other.
 
 ### Two-stream parallel model
 
-- **Stream A (engine):** S1 → S2 in ONERING. ~1 engineer, ~3–5 days.
+- **Stream A (engine):** S1 → S2 in ONERING. ~1 engineer, ~3–5 days. **Follow-up: S9** (the
+  gateway routes Open-Q1 expected to ride S2 — ~0.5–1 day; unblocks real-Airflow envs).
 - **Stream B (rohan_api):** S3 → S4 → S5 → S6 → S8. ~1 engineer, ~5–8 days. S4 has a
-  `Database/` repo handoff (budget 1–2 days).
+  `Database/` repo handoff (budget 1–2 days). **Follow-up: S10** (mock restart recovery —
+  ~0.5 day; independent of S9).
 - **Stream C (UI):** S7 begins as soon as S3+S5 contracts are frozen. ~0.5 engineer.
 
 Convergence: a working slice needs S2 (DAG) + S6 (materializer) green; the dev mock in S6
-lets Stream C demo without Stream A's real DAG. Solo sequence: S3 → S1 → S2 → S4 → S5 → S6
-→ S7 → S8.
+lets Stream C demo without Stream A's real DAG. **A working slice against *real*
+Airflow/MinIO additionally needs S9** — without it, uploads 502 and materialization fails
+(post-S6 review finding 1). Solo sequence: S3 → S1 → S2 → S4 → S5 → S6 → S7 → S8 → S9 → S10
+(S9/S10 in either order or parallel).
 
 ## Phase context summaries
 
@@ -725,6 +897,29 @@ contracts for detail.
   materialized as `CrrField[]` and idempotent re-materialize. Depends on S6. Mirrors compliance
   Phase 12.2. Stacks on phase-S6. Implements C17.
 
+- **S9 — `onering_api` acquisition gateway routes (ONERING).** Lands the two `/v1/acquisition`
+  routes that merged rohan_api code already calls: `POST /v1/acquisition/uploads` (multipart
+  `object_key` + `file`, streamed to MinIO, returns `{ key, size, content_type, etag }`) and
+  `GET /v1/acquisition/runs/{run_id}/requirements-projection` (raw artifact JSON or 404).
+  Depends on S2 (merged) — branches off ONERING main. Gotchas: the request/response shapes are
+  **already frozen** by the shipped rohan_api clients (C18/C19) — deviating means changing
+  `uploadAcquisitionDocument` / `getAcquisitionRequirementsProjection` in the same coordinated
+  change; validate `object_key` shape + org-prefix-vs-tenant-header match (the key is
+  caller-computed); resolve the run prefix via `runs_prefix_for(store)`, never hard-code
+  `AGENT_RUNS/`; stream uploads (mirror `routers/user_uploads.py`), don't buffer; update
+  `docs/specs/minio_path_contract.md`. Implements C18, C19.
+
+- **S10 — Dev-mock restart recovery + read size cap (rohan_api).** Fixes post-S6 finding 4: a
+  restart while a mocked extraction is in flight empties the mock's per-process registry, the
+  refresh catch swallows the resulting 404, and the run sits QUEUED/RUNNING forever while the
+  C10 guard 409-blocks re-triggers. Fix in the **refresh path**: mock-owned DAG + unknown-run
+  404 → flip the run FAILED with the literal C20 message. Gotcha: keep the mock's
+  `getDagRunStatus` throwing on unknown runs — `reconcileTriggerFailure()`'s probe depends on
+  throw semantics; detect the case via a typed flag/helper, not message string-matching. Also
+  caps `getAcquisitionRequirementsProjection` at 25 MB per-request (finding 5) without touching
+  the shared client's `maxContentLength: Infinity`. Branches off rohan_api main (S6 merged).
+  Independent of S9. Implements C20.
+
 ## Jira ticket
 
 **Title:** Acquisition Pathways — Requirements Record vertical slice (ONERING/Airflow
@@ -768,6 +963,13 @@ DAG, and a CI cross-check guards the shared artifact schema. Ships behind the ex
   user edits persisted via debounced PATCH; run-service + hydration specs pass.
 - [ ] **S8** A per-PR CI job validates the rohan_api ajv compiler against the pinned ONERING
   fixture, asserts byte-equal mock sync, and an E2E drives the slice end-to-end via the mock.
+- [ ] **S9** `POST /v1/acquisition/uploads` and `GET /v1/acquisition/runs/{run_id}/requirements-projection`
+  exist on the `onering_api` gateway matching C18/C19 (the shapes the merged rohan_api clients
+  call), with `object_key` validation + tenant-prefix check and route tests; the slice works
+  against real Airflow/MinIO.
+- [ ] **S10** A process restart during a mocked extraction no longer leaves the run stuck
+  (refresh flips it FAILED with the C20 message, re-trigger unblocked); `reconcileTriggerFailure`
+  probe semantics unchanged; the projection read is capped at 25 MB.
 
 ## Tech stack reference
 
@@ -803,12 +1005,15 @@ stacking — Stream B freezes them first and Streams A/C build against the schem
 | C9 `POST …/missions/:id/files` | S5, S7 | S5 implements; S7 consumes |
 | C10 `POST …/missions/:id/requirements:extract` | S5, S7 | S5 implements; S7 consumes |
 | C11 `OneringPipelineService.triggerAcquisitionRequirements()` | S5 | Trigger + run row |
-| C12 Artifact validator (ajv, version-strict) | S6 | Reads via `OneringArtifactService` |
-| C13 Materializer behavior + field→`CrrField` mapping | S6 | Phase-A/Phase-B discipline |
-| C14 In-process Airflow mock | S6 | Dev/staging only |
+| C12 Artifact validator (ajv, version-strict) | S6 | Reads via `OneringArtifactService`; **as-built:** `loadAndValidate(run)` takes the run row |
+| C13 Materializer behavior + field→`CrrField` mapping | S6 | Phase-A/Phase-B discipline; **as-built:** pill label is `doc_name \|\| doc_id` |
+| C14 In-process Airflow mock | S6 | Dev/staging only; **as-built:** in-memory at the read seam, also gated off when Key Vault is set |
 | C15 FE upload/extract consumption | S7 | rohan_ui services |
 | C16 `run_state` hydration contract (FE) | S7 | signal hydration + poll |
 | C17 Schema cross-check CI | S8 | mock-vs-engine fixture sync |
+| C18 `POST /v1/acquisition/uploads` (gateway) | S9 | Shape frozen by the shipped S5 client |
+| C19 `GET /v1/acquisition/runs/{run_id}/requirements-projection` (gateway) | S9 | Shape frozen by the shipped S6 client |
+| C20 Mock unknown-run recovery | S10 | Refresh-path fix; mock keeps throw semantics |
 
 ### C1 — `acquisition_requirements:build_steps` step factory (ONERING)
 
@@ -969,6 +1174,12 @@ ajv@^8, compiled once at module init from the C3 schema. `loadAndValidate(arcRun
 `OneringArtifactService`. `additionalProperties: true`; strict on `schema_version` (reject
 unknown). Throws `AcquisitionSchemaError` (map to 502).
 
+**As built (rohan_api #2035):** `loadAndValidate(run: OrPipelineRun)` takes the run **row**
+rather than a bare `arcRunId` — callers already hold the row and the artifact read needs
+`organization_id` for tenant headers. A pure `validate(raw, contextId)` half is exposed for
+tests and the S8 cross-check. Provided by `OneringModule` (not the AP module) to avoid a
+circular module import.
+
 ### C13 — Materializer behavior + field→CrrField mapping
 
 Phase A (no tx): read + validate; cross-check `json.run_id === run.arc_run_id` **and**
@@ -995,11 +1206,26 @@ PATCH `run_state` shallow-merges `{ canonicalRecord: CrrField[], requirementsRun
 status: 'SUCCEEDED' } }`; set `materialized_at`; flip run `SUCCESS`. Idempotent via
 `materialized_at`.
 
+**As built (rohan_api #2035):** the pill label is `e.doc_name || e.doc_id` (not `??`) — C3
+allows empty-string `doc_name`, and `||` keeps the label non-blank when a `doc_id` exists.
+Phase B takes a `pessimistic_write` row lock on the mission (same discipline as
+`ApMissionsService.runStateTransaction`) and resolves the Auth0 org string **before** the
+transaction.
+
 ### C14 — In-process Airflow mock
 
 When `ONERING_AIRFLOW_BASE_URL` empty + `NODE_ENV !== 'production'` + `ONERING_AIRFLOW_MOCK
 !== 'disabled'`: `triggerDagRun` writes the fixture artifact via the MinIO path and schedules
 a ~100 ms status flip to SUCCESS. Polling path downstream is identical to prod.
+
+**As built (rohan_api #2035):** two deviations. (1) The mock does **not** physically write to
+MinIO — rohan_api has no MinIO write client by gateway design — so the stamped fixture is
+served **in-memory at the artifact-read seam**
+(`OneringArtifactService.readAcquisitionRequirementsProjection` consults the mock registry
+before the gateway); everything downstream of the read is unchanged. (2) The gate additionally
+requires **no `KEY_VAULT_NAME`** (deployed envs resolve the Airflow URL from Key Vault, so a
+set Key Vault means "real Airflow lives here"). The registries are per-process — the
+restart-stuck-run consequence is fixed by **C20/S10**.
 
 ### C15 — FE upload/extract consumption
 
@@ -1019,3 +1245,67 @@ refetch state. User edits debounce-PATCH `run_state.canonicalRecord`.
 
 Per-PR: validate rohan_api ajv compiler against the ONERING sample fixture (pinned ref) and
 assert byte-equal sync with `src/onering/__mocks__/ui_projection_acquisition_requirements.fixture.json`.
+
+### C18 — `POST /v1/acquisition/uploads` (onering_api gateway, S9)
+
+> **Shape frozen by the shipped rohan_api S5 client** (`uploadAcquisitionDocument`,
+> `onering-api.client.ts:331-362`, merged in #2034/#2035). If the gateway must deviate, change
+> that client method + `ApUploadsService`'s mapping in the same coordinated change.
+
+Auth: `Depends(get_principal)` like every gateway router. Tenant context via the standard
+headers `X-Onering-Org-Id` / `X-Onering-User-Id` (rohan_api sends both on this path).
+
+Request: `multipart/form-data` with
+
+| Part | Type | Description |
+|------|------|-------------|
+| `object_key` | form field (string) | Caller-computed `acquisition/{org_id}/{mission_id}/uploads/{filename}` MinIO key |
+| `file` | file part | The document bytes (streamed; rohan_api raises its timeout to 120 s for large docs) |
+
+Validation: `object_key` must match the prefix shape above (reject traversal / absolute keys →
+**400**); the `{org_id}` segment must equal `X-Onering-Org-Id` → **403** on mismatch.
+
+Response (**200** = overwrite, **201** = created — rohan_api accepts both; any other status is
+raised as a typed error, including 204):
+
+```jsonc
+{ "key": "acquisition/org_123/123/uploads/AcquisitionPlan.pdf",
+  "size": 1048576, "content_type": "application/pdf", "etag": "\"abc…\"" /* or null */ }
+```
+
+(rohan_api parses this as `UploadResponseDto { key, size, content_type, etag }`.)
+
+### C19 — `GET /v1/acquisition/runs/{run_id}/requirements-projection` (onering_api gateway, S9)
+
+> **Shape frozen by the shipped rohan_api S6 client** (`getAcquisitionRequirementsProjection`,
+> merged in #2035). 404 is load-bearing: rohan_api maps it to `null`, and the materializer
+> treats "SUCCESS but no artifact" as an engine-contract violation (502 semantics).
+
+Auth: `Depends(get_principal)` + tenant headers as above (rohan_api sends `org_id` only on
+this poll-driven path; `user_id` is null).
+
+Behavior: resolve the run prefix via `onering_shared.storage.paths.runs_prefix_for(store)`
+(never hard-code `AGENT_RUNS/`), read
+`{runs_prefix}/{run_id}/pipelines/acquisition_requirements_extraction/ui/ui_projection_acquisition_requirements.json`,
+return it verbatim as the JSON body.
+
+| Status | Condition | Body |
+|--------|-----------|------|
+| 200 | Artifact exists | The raw C3 artifact JSON (gateway does not validate it — rohan_api's ajv validator owns that) |
+| 404 | Artifact not written yet / run unknown | error body (rohan_api ignores it, returns `null`) |
+
+### C20 — Mock unknown-run recovery (rohan_api, S10)
+
+The dev mock's registries are per-process. Recovery for a restart-orphaned run lives in
+`OneringPipelineService.refreshRunStatus()`'s catch path, **not** in the mock's return values:
+
+- The mock's `getDagRunStatus` **keeps throwing** on unknown `dag_run_id`s
+  (`reconcileTriggerFailure()`'s probe semantics — "status check throws ⇒ the DAG run never
+  reached Airflow ⇒ fail the row" — depend on it), but exposes the case distinguishably (typed
+  error flag or an `isUnknownRun(dagRunId)` helper; no message string-matching).
+- `refreshRunStatus()` catch: when `airflowMock.shouldHandle(run.airflow_dag_id)` and the
+  error is the mock's unknown-run case, set `status = FAILED` and the **literal**
+  `error_message = 'Dev Airflow mock lost run state (process restart) — re-trigger the extraction'`,
+  then save. This unblocks the C10 in-flight 409 guard so the user can re-trigger.
+- All other refresh errors keep today's behavior (warn + leave status unchanged) — transient
+  real-Airflow failures must not fail runs.
