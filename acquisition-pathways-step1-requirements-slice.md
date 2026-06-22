@@ -219,6 +219,30 @@ escape). **S9/S10 not started.**
    same class as the existing gateway JSON reads. Low severity; S10 caps it per-request rather
    than touching the shared client default.
 
+6. **`stage_documents` cannot read bare-key `document_uris` on the real path (BLOCKER outside
+   the dev mock) → Phase S11.** Found 2026-06-16 exercising real Airflow/MinIO end-to-end (the
+   slice reaches `run_extraction` and fails at staging). The S1 step's `_validate_uri_scheme`
+   (`factories/acquisition_requirements.py:200`) rejects rohan_api's bare object key —
+   `document_uri scheme '<none>' not in allowed set ['http','https','minio','s3']` — and
+   `_fetch_uri_bytes` (`:210`) probes `get_object_bytes`/`read_object`/`get_bytes`, **none of
+   which any storage backend implements** (its own comment: "no shipped backend exposes it
+   yet"), then falls back to the run-relative `load_bytes(run_id, uri)`, which cannot resolve the
+   absolute `acquisition/{org}/{mission}/uploads/…` key. So even accepting the bare key wouldn't
+   locate the object. The S1 factory test asserts step ordering only — never an actual fetch — so
+   this shipped broken behind the dev mock. Format is **settled as bare keys** (C4 + ONERING
+   `minio_path_contract.md` §8.1; rohan_api emits them verbatim via `attached_files[].uri`,
+   `ap-missions.controller.ts:398`), so the **engine owns the fix**. **Action: Phase S11
+   (Contract C21).**
+
+7. **S9 gateway upload-key validator rejected rohan_api's UUID sub-dir (fixed during testing).**
+   `onering_api` `_parse_acquisition_upload_key` required exactly five path segments and 400'd
+   rohan_api's real key (`…/uploads/{uuid}/{filename}`, six segments) with `object_key must match
+   acquisition/{org_id}/{mission_id}/uploads/{filename}`. The `{uuid}` dir is rohan_api's
+   deliberate anti-clobber namespace (`ApUploadsService`, `ap-uploads.service.ts:104`). Per C18
+   the shipped rohan_api client is the contract authority, so the gateway was relaxed to accept
+   the optional interior segment(s) while keeping the traversal/tenant guards. Regression test +
+   doc note tracked before the S9 branch merges (see C21's S9 note).
+
 **As-built contract deviations (documented in rohan_api #2035, now reflected in C12/C13/C14
 below):** C12's `loadAndValidate` takes the run **row** (not a bare `arcRunId`) for tenant
 context; C13 maps the pill label as `doc_name || doc_id` (not `??` — C3 allows empty-string
@@ -802,6 +826,66 @@ stuck QUEUED/RUNNING (and the mission 409-blocked) forever; cap the projection r
   flips FAILED with the literal message; subsequent `requirements:extract` no longer 409s);
   `reconcileTriggerFailure` probe semantics unchanged; oversized projection response rejects.
 
+### Phase S11 — Engine: `stage_documents` cross-prefix MinIO read of bare `document_uris` [PYTHON]
+
+> Added 2026-06-16 from post-S6 review finding 6. **Blocker for any environment with real
+> Airflow/MinIO** — the dev mock short-circuits the document-staging seam, so this path never ran
+> until the slice was exercised end-to-end against real Airflow. The run reaches `run_extraction`
+> and fails at `stage_documents`, which cannot read the uploaded objects from their
+> `acquisition/…` bucket prefix. Engine-only fix; **no rohan_api change** (format settled as bare
+> keys — Contract C21). Independent of S9/S10.
+
+```phase-meta
+phase: S11
+title: ONERING - stage_documents reads bare-key document_uris via cross-prefix MinIO getter
+tags: [PYTHON]
+repo: onering
+base_branch: base
+depends_on: [S1]
+files:
+  - arc_agent_writer/factories/acquisition_requirements.py
+  - arc_agent_writer/storage/minio_store.py
+  - arc_agent_writer/storage/sync_wrapper.py
+  - arc_agent_writer/storage/protocol.py
+  - arc_agent_writer/tests/factories/test_acquisition_requirements_factory.py
+  - docs/specs/minio_path_contract.md
+contracts:
+  - "C21 document_uris are bare MinIO object keys; engine cross-prefix read"
+verification:
+  - uv run pytest arc_agent_writer/tests/factories/test_acquisition_requirements_factory.py
+  - uv run pytest arc_agent_writer/tests/test_storage.py
+```
+
+**Goal**: make the S1 `stage_documents` step actually fetch the rohan_api-uploaded mission
+documents — bare `acquisition/{org}/{mission}/uploads/{uuid}/{filename}` MinIO keys — into the
+run workspace, so `run_extraction` proceeds against real Airflow/MinIO.
+
+**Steps**:
+
+- [ ] **S11.1** Add a **cross-prefix object read** to the storage backend:
+  `get_object_bytes(key: str) -> bytes` on `MinIOArtifactStore` (async) + `SyncMinIOStore` (sync
+  wrapper), reading an **absolute bucket key** (NOT run-relative). Reuse the existing key-scoped
+  path — `MinIOArtifactStore._load_bytes_at_key(key)` / the single-arg `load_bytes(path)` wrapper
+  (`storage/sync_wrapper.py:890`) — rather than instantiating a new MinIO client. Declare it on
+  the `StorageBackend` protocol (`storage/protocol.py`) as an optional capability. A missing key
+  raises the backend's existing not-found error (the staging step maps it to a per-doc failure).
+- [ ] **S11.2** In `factories/acquisition_requirements.py`, change `_validate_uri_scheme` /
+  `_fetch_uri_bytes` to accept a **schemeless** `document_uri` as a MinIO bucket-relative object
+  key (per **Contract C21** / `minio_path_contract.md` §8.1). Strip an optional `minio://` /
+  `s3://` scheme to the same key for forward-compat. **Keep** rejecting `file://`, absolute
+  filesystem paths, and any `..` traversal segment (the PR #409 SSRF/path-traversal guard). Fetch
+  via the S11.1 `get_object_bytes(key)` getter; drop the dead `read_object`/`get_bytes` probes and
+  the run-relative `load_bytes(run_id, uri)` fallback that can never resolve an `acquisition/…`
+  key.
+- [ ] **S11.3** Tests (the coverage S1 omitted — it asserts step ordering only): exercise
+  `stage_documents` end-to-end against a fake/in-memory store — happy path fetching a bare-key
+  `document_uri` writes `sources/{doc_id}_{name}` and registers `run_meta['documents']`; plus the
+  security rejections (`file://`, absolute path, `..` traversal) and the all-or-nothing partial
+  failure. Add a `get_object_bytes` round-trip test on `SyncMinIOStore` (`local_workspace=tmp_path`).
+- [ ] **S11.4** Update `docs/specs/minio_path_contract.md` §3.1/§8.1 to state explicitly that
+  `stage_documents` reads `document_uris` as **bare keys** in the `acquisition/…/uploads/` input
+  namespace via the cross-prefix getter (no scheme, no run-relative resolution).
+
 ## Phase order, dependencies, parallelism
 
 ### File-touch matrix
@@ -818,6 +902,7 @@ stuck QUEUED/RUNNING (and the mission 409-blocked) forever; cap the projection r
 | S8 | — | test/ (E2E + fixture); src/onering/{controllers,services} (fix-forwards) | — | — |
 | S9 | onering_api/{routers,services,tests}, docs/specs | — | — | — |
 | S10 | — | onering/services (mock + pipeline), onering/clients | — | — |
+| S11 | factories/acquisition_requirements.py, storage/{minio_store,sync_wrapper,protocol}, tests, docs/specs | — | — | — |
 
 No file is touched by two phases — except S10, which amends three S5/S6 files
 (`onering-airflow-mock.service.ts`, `onering-pipeline.service.ts`, `onering-api.client.ts`),
@@ -839,8 +924,10 @@ off main** in their repos (their dependencies are merged) and are independent of
 Convergence: a working slice needs S2 (DAG) + S6 (materializer) green; the dev mock in S6
 lets Stream C demo without Stream A's real DAG. **A working slice against *real*
 Airflow/MinIO additionally needs S9** — without it, uploads 502 and materialization fails
-(post-S6 review finding 1). Solo sequence: S3 → S1 → S2 → S4 → S5 → S6 → S7 → S8 → S9 → S10
-(S9/S10 in either order or parallel).
+(post-S6 review finding 1), **and S11** (the engine `stage_documents` read — post-S6 finding 6).
+Solo sequence: S3 → S1 → S2 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → S11
+(S9/S10/S11 in any order or parallel — all branch off their repo's main and are mutually
+independent; S9 + S11 are both required for the real-Airflow/MinIO path to work end-to-end).
 
 ## Phase context summaries
 
@@ -951,6 +1038,17 @@ contracts for detail.
   the shared client's `maxContentLength: Infinity`. Branches off rohan_api main (S6 merged).
   Independent of S9. Implements C20.
 
+- **S11 — `stage_documents` cross-prefix MinIO read (ONERING).** Fixes the real-path blocker
+  found 2026-06-16 (finding 6): the S1 `stage_documents` step cannot fetch rohan_api's uploaded
+  documents because `_validate_uri_scheme` requires a URI scheme — rejecting the bare
+  `acquisition/…` key C4 mandates — and `_fetch_uri_bytes` calls a `get_object_bytes` getter no
+  backend implements, falling back to a run-relative `load_bytes` that can't resolve an absolute
+  bucket key. Adds `get_object_bytes(key)` to `MinIOArtifactStore`/`SyncMinIOStore` (absolute-key
+  read, reusing `_load_bytes_at_key`), makes the factory accept schemeless bare keys (keeping the
+  `file://`/absolute-path/traversal guards), and adds the fetch tests S1 omitted (it asserts step
+  ordering only). Engine-only — no rohan_api change (format settled as bare keys). Depends on S1;
+  branches off ONERING main. Independent of S9/S10. Implements C21.
+
 ## Jira ticket
 
 **Title:** Acquisition Pathways — Requirements Record vertical slice (ONERING/Airflow
@@ -1003,6 +1101,11 @@ DAG, and a slice E2E exercises the whole path end-to-end. Ships behind the exist
 - [ ] **S10** A process restart during a mocked extraction no longer leaves the run stuck
   (refresh flips it FAILED with the C20 message, re-trigger unblocked); `reconcileTriggerFailure`
   probe semantics unchanged; the projection read is capped at 25 MB.
+- [ ] **S11** `stage_documents` fetches bare-key `document_uris`
+  (`acquisition/{org}/{mission}/uploads/{uuid}/{filename}`) from MinIO via a cross-prefix
+  `get_object_bytes` backend read, staging them under `sources/` so `run_extraction` proceeds on
+  real Airflow/MinIO; schemeless keys accepted, `file://`/absolute/traversal rejected; fetch
+  happy-path + rejection tests added (the coverage S1 omitted).
 
 ## Tech stack reference
 
@@ -1047,6 +1150,7 @@ stacking — Stream B freezes them first and Streams A/C build against the schem
 | C18 `POST /v1/acquisition/uploads` (gateway) | S9 | Shape frozen by the shipped S5 client |
 | C19 `GET /v1/acquisition/runs/{run_id}/requirements-projection` (gateway) | S9 | Shape frozen by the shipped S6 client |
 | C20 Mock unknown-run recovery | S10 | Refresh-path fix; mock keeps throw semantics |
+| C21 `document_uris` bare keys + engine cross-prefix read | S11 | Engine reads bare MinIO keys; no rohan_api change |
 
 ### C1 — `acquisition_requirements:build_steps` step factory (ONERING)
 
@@ -1350,3 +1454,42 @@ The dev mock's registries are per-process. Recovery for a restart-orphaned run l
   then save. This unblocks the C10 in-flight 409 guard so the user can re-trigger.
 - All other refresh errors keep today's behavior (warn + leave status unchanged) — transient
   real-Airflow failures must not fail runs.
+
+### C21 — `document_uris` are bare MinIO object keys; engine cross-prefix read (ONERING, S11)
+
+> Added 2026-06-16. Settles the format ambiguity surfaced by real-path testing: the S1
+> `stage_documents` step required a URI scheme and could not read the uploaded objects,
+> contradicting the documented contract. Engine owns the fix; **no rohan_api change**.
+
+`document_uris` (DAG `dag_run.conf`, **C4**) are **bare MinIO object keys — no scheme**, in the
+input namespace:
+
+```
+acquisition/{org_id}/{mission_id}/uploads/{uuid}/{filename}
+```
+
+The `{uuid}` per-upload dir is inserted by rohan_api's `ApUploadsService`
+(`ap-uploads.service.ts:104`) as an anti-clobber namespace. Authority: **C4** + ONERING
+`docs/specs/minio_path_contract.md` §8.1. rohan_api emits these verbatim from
+`attached_files[].uri` (`ap-missions.controller.ts:398`). **No `minio://` prefixing in
+rohan_api.**
+
+Engine read contract (S11):
+
+- `stage_documents` treats a schemeless `document_uri` as a MinIO bucket-relative key and reads it
+  via a new cross-prefix `get_object_bytes(key) -> bytes` on the storage backend (absolute key,
+  **not** run-relative; reuses `MinIOArtifactStore._load_bytes_at_key`). An optional `minio://` /
+  `s3://` scheme is stripped to the same key.
+- `file://`, absolute filesystem paths, and `..` traversal remain **rejected** (SSRF /
+  path-traversal guard, PR #409).
+- A missing object fails the staging step (all-or-nothing → `RuntimeError`), so a retry re-stages
+  the full set.
+
+**Related S9 gateway fix (applied during testing, regression test pending).** The `onering_api`
+gateway `_parse_acquisition_upload_key` originally required exactly five path segments and 400'd
+rohan_api's six-segment key (`object_key must match acquisition/{org_id}/{mission_id}/uploads/{filename}`).
+It was relaxed to accept the optional interior `{uuid}` segment(s) while keeping the traversal
+guard and the tenant-`org_id`-vs-`X-Onering-Org-Id` check. Per **C18** the shipped rohan_api
+client is the contract authority. Add the regression test (6-segment key accepted; 5-segment
+still works; traversal/wrong-folder/too-short rejected; org mismatch 403) + the
+`minio_path_contract.md` note under **S9.5** before the S9 branch merges.
