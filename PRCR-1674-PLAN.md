@@ -419,7 +419,7 @@ phase: P6
 title: ONERING - onering_api pathways claim-check upload-key extension + pathways-projection read route (+ trigger parity if cutover)
 tags: [PYTHON]
 repo: onering
-base_branch: base
+base_branch: phase-P2
 depends_on: [P2]
 files:
   - onering_api/routers/acquisition.py
@@ -433,6 +433,14 @@ contracts:
 verification:
   - uv run pytest onering_api/tests/test_acquisition_routes.py
 ```
+
+> **Stacking note.** P6 stacks on `phase-P2` (gateway routes + validator only — a small, independent
+> diff), and **P7 stacks on P6** so the P7 branch carries the full ONERING stack (P1+P2+P6+P7) and is
+> locally testable end-to-end — exercising the gateway routes against the real catalog scorer. P6 and
+> P7 touch disjoint files (P6 = `onering_api/` gateway; P7 = `arc_agent_writer/` scorer), so the stack
+> order is a convenience for one full-stack test branch, not a code dependency. P6.0's only hard
+> consumer is P4, which is unblocked locally by the P5.5b mock stub and only needs P6.0 *deployed*
+> before it runs against a real gateway.
 
 **Goal**: extend the gateway upload validator to accept the `pathways/` claim-check prefix (so P4's
 record write lands), and land the gateway read route the rohan_api P5 client calls, so the slice
@@ -463,8 +471,8 @@ phase: P7
 title: ONERING - acquisition/vehicles catalog + deterministic+LLM two-layer scorer (populate score{})
 tags: [PYTHON]
 repo: onering
-base_branch: phase-P2
-depends_on: [P1, P2]
+base_branch: phase-P6
+depends_on: [P1, P2, P6]
 files:
   - arc_agent_writer/acquisition/vehicles/schema.py
   - arc_agent_writer/acquisition/vehicles/loader.py
@@ -651,25 +659,29 @@ No file is touched by two phases except P5 (amends the P4 `onering-pipeline.serv
 
 ### Stream model
 
-- **Stream A (engine):** P1 → P2 → **P7** in ONERING (P7 is the defensibility upgrade — vehicle
-  catalog + two-layer scorer — stacked on P2). Follow-up: **P6** (gateway upload-validator extension
-  P6.0 + projection read route; branches off ONERING main after P2). **P6.0 is on the critical path
-  for P4** — P4's claim-check write 400s until the gateway accepts the `pathways/` prefix, so land
-  P6 before exercising P4 against any reachable gateway. P7's vehicle dataset is the critical-path
-  content (engineering ships a defensible v1; the SME refines behind the frozen schema).
+- **Stream A (engine):** P1 → P2 → **P6** → **P7** in ONERING. P6 ships the gateway upload-validator
+  extension P6.0 + projection read route (a small, independent diff on P2); **P7 stacks on P6** so the
+  P7 branch carries the full ONERING stack (P1+P2+P6+P7) and is locally testable end-to-end. P7 is the
+  defensibility upgrade — vehicle catalog + two-layer scorer. **P6.0 is on the critical path for P4** —
+  P4's claim-check write 400s until the gateway accepts the `pathways/` prefix, so land P6 before
+  exercising P4 against any reachable gateway (locally the P5.5b mock stub bypasses the gateway
+  entirely, so P4 dev is unblocked regardless). P7's vehicle dataset is the critical-path content
+  (engineering ships a defensible v1; the SME refines behind the frozen schema).
 - **Stream B (rohan_api):** P3 → P4 → P5 → P9.
 - **Stream C (UI):** P8 can develop against the P5 dev mock once P3+P4 contracts freeze, but **ships
   after P7** (sequencing gate — first user-facing render must be scored/defensible).
 
-**Stacks:** P1→P2→P7 (ONERING); P3→P4→P5→P9 (rohan_api); P6 and P8 branch off their repos' main.
+**Stacks:** P1→P2→P6→P7 (ONERING — P7 stacks on P6, making the P7 branch the single full-stack
+local-test branch); P3→P4→P5→P9 (rohan_api); P8 branches off its repo's main.
 Convergence: a working slice needs P2 (DAG) + P5 (materializer) green; the P5 dev mock lets Stream C
 demo the full path with **no gateway reachable** (P5.5b stubs the claim-check upload in mock mode,
 alongside the trigger/artifact-read stubs). **The first user-facing ship additionally needs P7**
 (defensible scoring); a slice against **real** Airflow/MinIO additionally needs **P6** — both P6.0
 (the gateway accepts P4's `pathways/` claim-check write) and P6.1 (the projection read route).
 
-Solo sequence: **P3 → P1 → P2 → P6 → P4 → P5 → P7 → P8 → P9** (P6 before P4 so the claim-check write
-is accepted; P6 can start any time after P2).
+Solo sequence: **P3 → P1 → P2 → P6 → P7 → P4 → P5 → P8 → P9** (P7 stacks on P6, so P6 lands first;
+P6 carries P6.0 so the claim-check write is accepted before P4 runs against a real gateway — locally
+the P5.5b stub bypasses it).
 
 ## Phase context summaries
 
@@ -724,7 +736,8 @@ is accepted; P6 can start any time after P2).
   without it). **P6.1** adds `GET /v1/acquisition/runs/{run_id}/pathways-projection` to the existing
   `routers/acquisition.py` (mirrors the shipped requirements-projection route), so the materializer
   can read the artifact against real Airflow/MinIO. Optionally adds the cutover trigger route
-  (Open-Q1). Depends on P2; branches off ONERING main. Implements C13 + the C9 write-key extension.
+  (Open-Q1). Depends on P2; **stacks on phase-P2** (a small, independent gateway-only diff). P7 then
+  stacks on P6, so the full-stack local-test branch is P7. Implements C13 + the C9 write-key extension.
 
 - **P7 — Contract-vehicle catalog + two-layer scorer (ONERING).** The defensibility upgrade,
   promoted ahead of the FE swap. Adds a versioned `acquisition/vehicles/` catalog (Pydantic schema +
@@ -732,9 +745,10 @@ is accepted; P6 can start any time after P2).
   pure-LLM scoring with a **two-layer** scorer: 10 weighted deterministic signals + hard disqualifiers
   (value > ceiling, cancelled vehicle) blended `0.40·det + 0.60·llm`, collapsed to 3 tiers, populating
   the reserved `score{}`/`recommendationKind`/`evidence[]`. **No `schema_version` bump** — content
-  behind the P2-frozen schema. Re-vendors the updated fixture into rohan_api. Depends on P1+P2; stacks
-  on phase-P2. Gotchas: keep exactly-3 + one-recommended invariants; tiebreak low>medium>high; loader
-  must not hit network/DB. Implements C15.
+  behind the P2-frozen schema. Re-vendors the updated fixture into rohan_api. Depends on P1+P2 (+P6 for
+  git stacking only); **stacks on phase-P6** so the P7 branch carries the full ONERING stack
+  (P1+P2+P6+P7) for end-to-end local testing. Gotchas: keep exactly-3 + one-recommended invariants;
+  tiebreak low>medium>high; loader must not hit network/DB. Implements C15.
 
 - **P8 — FE swap (rohan_ui).** Adds `dimensions`/`score`/`evidence`/`recommendationKind` to the
   `AcquisitionPathway` type, a `triggerPathways` method on the generic `AcquisitionRunService`, and
