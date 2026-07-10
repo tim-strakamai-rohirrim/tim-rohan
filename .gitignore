@@ -9,3 +9,5 @@ rohan_ui-parent/
 # Cursor/editor internals
 .cursor/
 .claude/
+
+.playwright-mcp/
