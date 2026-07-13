@@ -212,7 +212,12 @@ export class ApStepCardComponent {
 
 ## 6. ApSourcePillComponent (optional — defer if awkward)
 
-Source citation pill used by both workbench steps. Each step currently maps `kind → icon` slightly differently (`web→language`, `library→dataset`, `upload→description`, `user-typed→person` — `SourcePill['kind']` has exactly these four keys); pass the resolved icon in rather than moving that map into the component.
+Source citation pill used by both workbench steps. The two steps define **different `kind` types with different key sets**, so there is no single shared enum — pass the resolved icon in rather than moving any `kind → icon` map into the component:
+
+- `requirements-record` — `SourceKind = 'web' | 'library' | 'upload' | 'user-typed'` (4 keys), mapped `web→language`, `library→dataset`, `upload→description`, `user-typed→person` (see `SOURCE_ICONS` / `sourceIcon()`).
+- `integrity-check` — `SourcePillKind = 'web' | 'library' | 'upload'` (3 keys; **no `user-typed`**).
+
+This divergence is exactly why this component is optional (Open Q#3): if wiring both step maps through `icon()` doesn't shrink the steps, leave source pills per-step.
 
 ```ts
 @Component({

@@ -67,18 +67,23 @@ files:
   - src/app/pages/acquisition-pathways/shared/step-scaffold/ap-step-scaffold.component.ts
   - src/app/pages/acquisition-pathways/shared/step-scaffold/ap-step-scaffold.component.html
   - src/app/pages/acquisition-pathways/shared/step-scaffold/ap-step-scaffold.component.scss
+  - src/app/pages/acquisition-pathways/shared/step-scaffold/ap-step-scaffold.component.spec.ts
   - src/app/pages/acquisition-pathways/shared/step-empty-state/ap-step-empty-state.component.ts
   - src/app/pages/acquisition-pathways/shared/step-empty-state/ap-step-empty-state.component.html
   - src/app/pages/acquisition-pathways/shared/step-empty-state/ap-step-empty-state.component.scss
+  - src/app/pages/acquisition-pathways/shared/step-empty-state/ap-step-empty-state.component.spec.ts
   - src/app/pages/acquisition-pathways/shared/filter-card/ap-filter-card.component.ts
   - src/app/pages/acquisition-pathways/shared/filter-card/ap-filter-card.component.html
   - src/app/pages/acquisition-pathways/shared/filter-card/ap-filter-card.component.scss
+  - src/app/pages/acquisition-pathways/shared/filter-card/ap-filter-card.component.spec.ts
   - src/app/pages/acquisition-pathways/shared/filter-pill/ap-filter-pill.component.ts
   - src/app/pages/acquisition-pathways/shared/filter-pill/ap-filter-pill.component.html
   - src/app/pages/acquisition-pathways/shared/filter-pill/ap-filter-pill.component.scss
+  - src/app/pages/acquisition-pathways/shared/filter-pill/ap-filter-pill.component.spec.ts
   - src/app/pages/acquisition-pathways/shared/step-card/ap-step-card.component.ts
   - src/app/pages/acquisition-pathways/shared/step-card/ap-step-card.component.html
   - src/app/pages/acquisition-pathways/shared/step-card/ap-step-card.component.scss
+  - src/app/pages/acquisition-pathways/shared/step-card/ap-step-card.component.spec.ts
   - src/app/pages/acquisition-pathways/shared/_ap-step.scss
   - src/app/pages/acquisition-pathways/shared/index.ts
   - src/app/pages/acquisition-pathways/acquisition-pathways.module.ts
