@@ -1,6 +1,6 @@
-# AP External Integrations — Contracts
+# PRCR-1689 — AP External Integrations — Contracts
 
-> **Ticket:** none yet. Working slug `AP-INTEGRATIONS`. Rename docs + branch prefixes once a JIRA ticket exists (file under PE / Pathway Engines epic **PRCR-1633**).
+> **Ticket:** [PRCR-1689](https://rohirrim.atlassian.net/browse/PRCR-1689), under the PE / Pathway Engines epic [PRCR-1633](https://rohirrim.atlassian.net/browse/PRCR-1633). Plan: `PRCR-1689-PLAN.md`.
 
 REST resource, DTOs, DB schema, and frontend types for the "add an integration to an external source" feature (SAM.gov, FPDS, USASpending, …). All shapes are **snake_case** to match the existing AP module DTOs/entities.
 

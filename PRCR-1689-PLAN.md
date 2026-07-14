@@ -1,6 +1,6 @@
-# AP External Integrations — Implementation Plan
+# PRCR-1689 — AP External Integrations — Implementation Plan
 
-> **Ticket:** none yet. Working slug `AP-INTEGRATIONS`. Rename `AP-INTEGRATIONS-PLAN.md` / `AP-INTEGRATIONS-contracts.md` + branch prefixes once a JIRA ticket exists (file under PE / Pathway Engines epic **PRCR-1633**).
+> **Ticket:** [PRCR-1689](https://rohirrim.atlassian.net/browse/PRCR-1689), under the PE / Pathway Engines epic [PRCR-1633](https://rohirrim.atlassian.net/browse/PRCR-1633). Contracts: `PRCR-1689-contracts.md`.
 
 ## Problem statement
 
@@ -225,7 +225,7 @@ verification:
 
 **Recommended order:** 1 → 2 → 3 → 4. Backend-first so the contract is real before the FE consumes it. P1 and P2 are safe standalone merges (table + unused resource). P3 is an additive FE merge (client consumed by nothing yet). P4 is the switch-over that removes the mock.
 
-**Branches (stacked, per repo):** `{user}/AP-INTEGRATIONS/phase-{N}`.
+**Branches (stacked, per repo):** `{user}/PRCR-1689/phase-{N}`.
 
 ## Phase context summaries
 
@@ -238,6 +238,8 @@ verification:
 **Phase 4** (rohan_ui, stacks on Phase 3) — Switches the admin panel + connect dialog from the in-memory mock to `ApIntegrationsApiService`: panel splits `listIntegrations` results on `archived` (connected = active rows; disconnected = archived rows + never-connected `KNOWN_PROVIDERS`); dialog performs real connect/edit/disconnect — reconnect submits through connect and the backend revives the row — and **drops** the simulated 2FA/connecting steps; the `EXTERNAL_SOURCES` seed + mock service methods are deleted; loading/error states added. Depends on Phase 3. Also adopts PE's backend-agnostic UX patterns (confirm-disconnect step + `ToastNotificationService` success toasts) — PE's portal components themselves are **not** reused (they're welded to the onering/portals query layer, RSA cipher, and 2FA steps this plan avoids; the shared display layer is `SharedComponentsModule`, which AP's dialog already composes). Gotchas: on metadata-only edit, omit `secret` so the stored credential isn't overwritten; reconnect always requires fresh credentials (the archived row's secret was cleared); keep the `isAdmin` gate and the disabled non-Pathway-Engine module chips; surface errors (don't swallow).
 
 ## Jira ticket
+
+**Ticket:** [PRCR-1689](https://rohirrim.atlassian.net/browse/PRCR-1689) (epic [PRCR-1633](https://rohirrim.atlassian.net/browse/PRCR-1633)). Title/description/AC below are the intended ticket content — sync them to Jira if the ticket body differs.
 
 **Title:** Acquisition Pathways — persist external data-source integrations (connect / manage) for Pathway Engine
 
